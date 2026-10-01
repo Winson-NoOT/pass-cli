@@ -367,9 +367,18 @@ async fn execute_command(
     let child_pid = child.id();
 
     // Get stdin, stdout and stderr handles
-    let stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture child stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture child stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture child stderr"))?;
 
     let stdin_handle = handle_stdin(stdin);
     let stdout_handle = handle_stream(stdout, masking_regex.clone(), false);
