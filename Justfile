@@ -43,13 +43,40 @@ web-sdk-test: web-sdk
 # --- Android
 
 # Build the Kotlin package (aar), bindings included, for the given ABIs (aarch64, armv7, x86_64)
-android-sdk *abis="aarch64 armv7 x86_64": (_bindings "kotlin")
-    rm -rf {{ android_bindings_dir }} {{ android_jni_dir }}
-    mkdir -p {{ android_bindings_dir }}
-    cp -r {{ tmp_bindings_dir }}/* {{ android_bindings_dir }}/
-    for abi in {{ abis }}; do just _android-lib "${abi}"; done
+android-sdk *abis="aarch64 armv7 x86_64":
+    just android-sdk-bindings {{ abis }}
     cd {{ android_dir }} && ./gradlew :lib:assembleRelease --no-configuration-cache
     @echo "Kotlin package ready in {{ android_dir }}/lib/build/outputs/aar"
+
+# Stage the Kotlin bindings and the native libraries for the given ABIs into the aar module (no gradle)
+android-sdk-bindings *abis="aarch64 armv7 x86_64": (_bindings "kotlin")
+    rm -rf {{ android_jni_dir }}
+    just android-sdk-stage-bindings
+    for abi in {{ abis }}; do just _android-lib "${abi}"; done
+
+# Copy the bindings generated in target/tmp-bindings into the aar module (leaves jniLibs untouched)
+android-sdk-stage-bindings:
+    rm -rf {{ android_bindings_dir }}
+    mkdir -p {{ android_bindings_dir }}
+    cp -r {{ tmp_bindings_dir }}/* {{ android_bindings_dir }}/
+
+# Generate the Kotlin bindings into target/tmp-bindings (host build + uniffi-bindgen, no gradle)
+android-sdk-bindings-only: (_bindings "kotlin")
+
+# Build and strip the native library for a single Android ABI (aarch64, armv7, x86_64) into jniLibs
+android-sdk-lib abi: (_android-lib abi)
+
+# Package the aar from what is staged in bindings/jniLibs (CI unify step); fails if an ABI (e.g. arm64-v8a) is missing
+android-sdk-package *abis="arm64-v8a armeabi-v7a x86_64":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for abi in {{ abis }}; do
+        if ! ls "{{ android_jni_dir }}/${abi}"/*.so >/dev/null 2>&1; then
+            echo "Missing native library for ABI ${abi} in {{ android_jni_dir }}/${abi}" >&2
+            exit 1
+        fi
+    done
+    cd {{ android_dir }} && ./gradlew :lib:assembleRelease --no-configuration-cache
 
 # Build the host library and fresh Kotlin bindings the JVM tests run against (into libTest/src/main)
 android-sdk-host: (_bindings "kotlin" "--no-format")
