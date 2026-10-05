@@ -14,6 +14,9 @@ ios_header_dir := ios_dir / "headers"
 ios_package_dir := ios_dir / "PassSdk"
 ios_sources_dir := ios_package_dir / "Sources/PassSdk"
 ios_xcframework := ios_package_dir / "RustFramework.xcframework"
+python_sdk_dir := justfile_directory() / "pass-python-sdk"
+python_dist_dir := python_sdk_dir / "dist"
+python_venv_dir := python_sdk_dir / ".venv"
 tmp_bindings_dir := target_dir / "tmp-bindings"
 mobile_lib := "pass_mobile_sdk"
 host_lib_ext := if os() == "macos" { "dylib" } else { "so" }
@@ -151,6 +154,33 @@ ios-sdk slices="all": (_bindings "swift")
     xcodebuild -create-xcframework "${args[@]}" -output {{ ios_xcframework }}
     echo "Swift package ready in {{ ios_package_dir }}"
 
+# --- Python
+
+# Build the wheel into pass-python-sdk/dist; the bindings are generated from the host build (extra args go to maturin)
+python-sdk *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf {{ python_dist_dir }}
+    maturin="maturin"
+    command -v maturin >/dev/null || maturin="uvx maturin"
+    cd {{ python_sdk_dir }}
+    ${maturin} build --release --out dist {{ args }}
+    echo "Python wheel ready in {{ python_dist_dir }}"
+
+# Run the Python unit tests (no network) against the wheel in pass-python-sdk/dist (extra args go to pytest)
+python-sdk-test *args: python-sdk
+    just _python-sdk-pytest tests/unit {{ args }}
+
+# Run the Python e2e tests against a real backend (needs PROTON_PASS_USERNAME/PROTON_PASS_PASSWORD; extra args go to pytest)
+python-sdk-e2e-test *args: python-sdk
+    just _python-sdk-pytest tests/e2e {{ args }}
+
+# Installs the wheel from pass-python-sdk/dist and the test dependencies in a fresh venv, then runs pytest on `path`
+_python-sdk-pytest path *args:
+    uv venv --clear --quiet {{ python_venv_dir }}
+    cd {{ python_sdk_dir }} && uv pip install --quiet --python {{ python_venv_dir }} --group test dist/*.whl
+    cd {{ python_sdk_dir }} && {{ python_venv_dir }}/bin/python -m pytest {{ path }} {{ args }}
+
 # --- Shared
 
 # Generates the bindings for `language` from a host build into target/tmp-bindings
@@ -163,7 +193,7 @@ _bindings language *flags:
         --out-dir {{ tmp_bindings_dir }} {{ flags }}
 
 # Remove all build outputs: cargo target, SDK packages, wasm-pack pkg, node_modules, Gradle caches
-clean: mobile-sdk-clean
+clean: mobile-sdk-clean python-sdk-clean
     cargo clean
     rm -rf {{ web_sdk_dir }}/dist {{ web_sdk_dir }}/pkg {{ justfile_directory() }}/pass/pkg
     rm -rf {{ web_sdk_dir }}/test/node_modules {{ web_sdk_dir }}/example/node_modules
@@ -174,3 +204,8 @@ mobile-sdk-clean:
     rm -rf {{ tmp_bindings_dir }} {{ android_bindings_dir }} {{ android_jni_dir }} {{ android_test_dir }}
     rm -rf {{ android_dir }}/build {{ android_dir }}/lib/build {{ android_dir }}/libTest/build
     rm -rf {{ ios_header_dir }} {{ ios_dir }}/frameworks {{ ios_sources_dir }} {{ ios_xcframework }} {{ ios_package_dir }}/.build
+
+# Remove the Python wheel, venv and caches
+python-sdk-clean:
+    rm -rf {{ python_dist_dir }} {{ python_venv_dir }} {{ python_sdk_dir }}/.pytest_cache
+    find {{ python_sdk_dir }} -name __pycache__ -type d -prune -exec rm -rf {} +

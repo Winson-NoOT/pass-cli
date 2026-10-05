@@ -24,8 +24,9 @@ extern crate tracing;
 #[macro_use]
 mod macros;
 
+// Named explicitly as the word `pass` is a keyword in some languages.
 #[cfg(uniffi_runtime)]
-uniffi::setup_scaffolding!();
+uniffi::setup_scaffolding!("pass_core");
 
 #[cfg(test)]
 #[macro_use]

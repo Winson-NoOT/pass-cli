@@ -1,11 +1,15 @@
 [workspace]
 members = ["pass", "pass-*"]
+# Python package only (maturin builds pass-mobile-sdk), it has no Cargo.toml
+exclude = ["pass-python-sdk"]
 default-members = [
     "pass-cli",
     "pass-db",
     "pass-fs",
     "pass",
-    "pass-derive"
+    "pass-derive",
+    # maturin runs its `uniffi-bindgen` bin (in the default members) to generate the Python bindings
+    "pass-uniffi-bindgen"
 ]
 resolver = "2"
 
