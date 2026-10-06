@@ -107,6 +107,7 @@ pub async fn run(
                 Some(&item.item.content.title),
             )
             .await?;
+            client.mark_item_read(&share_id, &item_id).await;
             (item, field, None)
         }
         ViewItemQuery::Uri(uri) => {
@@ -132,6 +133,7 @@ pub async fn run(
                 Some(&full_item.item.content.title),
             )
             .await?;
+            client.mark_item_read(&item.share_id, &item.id).await;
             (full_item, reference.field_name, totp)
         }
     };

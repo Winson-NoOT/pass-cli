@@ -29,6 +29,7 @@ mod members;
 mod r#move;
 mod move_to_folder;
 mod open;
+pub(crate) mod read;
 #[allow(dead_code)]
 mod revisions;
 mod share;
