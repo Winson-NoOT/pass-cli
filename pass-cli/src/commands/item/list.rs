@@ -303,6 +303,12 @@ pub async fn run(
         sort.sort_items(&mut items);
     }
 
+    if show_secrets {
+        // Secrets of every listed item are exposed, so report them all as read (batched in the client).
+        let item_ids: Vec<ItemId> = items.iter().map(|item| item.id.clone()).collect();
+        client.mark_items_read(&share_id, &item_ids).await;
+    }
+
     match output {
         OutputFormat::Json => {
             #[cfg(feature = "internal")]

@@ -85,6 +85,8 @@ pub async fn run(
         .await
         .context("Error downloading attachment")?;
 
+    client.mark_item_read(&share_id, &item_id).await;
+
     println!(
         "Successfully downloaded attachment to: {}",
         output.display()

@@ -238,6 +238,8 @@ impl SecretResolver for PassClientResolver {
             Some(&item.id),
         )
         .await?;
+        // Deduplicated per item inside the client, so many secrets of one item report once.
+        self.client.mark_item_read(&item.share_id, &item.id).await;
 
         let field = item.get_field(&secret_ref.field_name).ok_or_else(|| {
             anyhow!(

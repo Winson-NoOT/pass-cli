@@ -22,6 +22,8 @@ use anyhow::{Context, Result};
 use muon::GET;
 use pass_derive::sdk_export;
 
+struct UserPlanTypeCacheType;
+
 // Example enum for PlanType
 #[sdk_export]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -152,6 +154,9 @@ impl<C: PassClientContext> PassClient<C> {
             .context("Error retrieving user info")?;
 
         let response: GetUserInfoResponse = assert_response!(res);
+        self.cache
+            .store(UserPlanTypeCacheType, response.access.plan.plan_type)
+            .await;
         Ok(response.access)
     }
 
@@ -176,6 +181,17 @@ impl<C: PassClientContext> PassClient<C> {
             Some(v) => Ok(v),
             None => Ok(false),
         }
+    }
+}
+
+impl<C: PassClientContext> PassClient<C> {
+    /// Plan type of the user, memoised for the lifetime of the client.
+    /// Errors are not cached, so a later call retries the request.
+    pub(crate) async fn get_plan_type(&self) -> Result<PlanType> {
+        if let Some(cached) = self.cache.get(UserPlanTypeCacheType).await {
+            return Ok(cached);
+        }
+        Ok(self.get_user_access().await?.plan.plan_type)
     }
 }
 

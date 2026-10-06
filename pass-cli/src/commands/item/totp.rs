@@ -25,7 +25,7 @@ use crate::helpers::CliPassClient as PassClient;
 use anyhow::{Context, Result, anyhow, bail};
 use jiff::Timestamp;
 use pass::FindItemQuery;
-use pass::domain::{EventAction, Field, ShareId};
+use pass::domain::{EventAction, Field};
 use proton_pass_common::totp::TOTP;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -127,7 +127,7 @@ pub async fn run(
             .unwrap_or(OutputFormat::Human),
     };
 
-    let (item, effective_field, share_id) = match query {
+    let (item, effective_field) = match query {
         ViewTotpQuery::Ids {
             share_query,
             item_query,
@@ -165,7 +165,7 @@ pub async fn run(
                         .ok_or_else(|| anyhow!("No item found with title: {}", title))?
                 }
             };
-            (item, field, share_id)
+            (item, field)
         }
         ViewTotpQuery::Uri(uri) => {
             let reference = ItemReference::parse(&uri).context("Invalid item reference")?;
@@ -175,7 +175,7 @@ pub async fn run(
                 .await
                 .context("Error retrieving item")?;
 
-            (item, reference.field_name, ShareId::new(reference.share_id))
+            (item, reference.field_name)
         }
     };
 
@@ -223,11 +223,12 @@ pub async fn run(
     send_reason_if_agent_with_name(
         &client,
         EventAction::ItemRead,
-        &share_id,
+        &item.share_id,
         Some(&item.id),
         Some(&item.content.title),
     )
     .await?;
+    client.mark_item_read(&item.share_id, &item.id).await;
 
     // Output the results
     match output {
