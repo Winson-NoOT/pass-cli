@@ -75,15 +75,9 @@ impl<C: PassClientContext> PassClient<C> {
             .find_vault(vault_name)
             .await
             .context("Error finding vault by name")?;
-        let items = self
-            .list_items(&vault.share_id)
+        self.find_item_in_share(&vault.share_id, |i| i.content.title == item_name)
             .await
-            .context("Error listing items")?;
-        let item = items
-            .into_iter()
-            .find(|i| i.content.title == item_name)
-            .ok_or_else(|| anyhow!("Could not find item with name {}", item_name))?;
-
-        Ok(item)
+            .context("Error listing items")?
+            .ok_or_else(|| anyhow!("Could not find item with name {}", item_name))
     }
 }

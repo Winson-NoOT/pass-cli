@@ -25,6 +25,8 @@ use anyhow::{Context, Result};
 use muon::GET;
 use pass_derive::sdk_export;
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::ops::ControlFlow;
 
 struct ItemsForShareCacheType;
 type ItemsForShareCache = HashMap<ShareId, SerializedItemsWithKey>;
@@ -101,56 +103,14 @@ impl<C: PassClientContext> PassClient<C> {
     /// Lists the items available for a given ShareId
     #[sdk_export]
     pub async fn list_items(&self, share_id: &ShareId) -> Result<Vec<Item>> {
+        let opened = match self
+            .scan_items(share_id, |_| ControlFlow::<Infallible>::Continue(()))
+            .await?
         {
-            let share_id = share_id.clone();
-            self.cache
-                .ensure_has_value(ItemsForShareCacheType, ItemsForShareCache::new)
-                .await;
-
-            let cached: Option<ItemsForShareCache> = self.cache.get(ItemsForShareCacheType).await;
-            if let Some(cached) = cached {
-                let share_items: Option<&SerializedItemsWithKey> = cached.get(&share_id);
-                if let Some(cached_items) = share_items {
-                    match cached_items.deserialize(self.memory_xor_key) {
-                        Ok(items) => {
-                            let items = items.into_iter().map(|i| i.item).collect();
-                            trace!("Returning cached items for share {share_id}");
-                            return Ok(items);
-                        }
-                        Err(e) => {
-                            warn!("Error deserializing cached items: {e:#}");
-                        }
-                    }
-                }
-            }
-        }
-
-        let items = self
-            .fetch_items(share_id)
-            .await
-            .context("Error fetching items")?;
-
-        let opened = if items.is_empty() {
-            vec![]
-        } else {
-            self.open_items(share_id, items)
-                .await
-                .context("Error opening items")?
+            ControlFlow::Continue(opened) => opened,
+            ControlFlow::Break(never) => match never {},
         };
-
-        let serialized = SerializedItemsWithKey::new(&opened, self.memory_xor_key)
-            .context("Error caching items")?;
-        self.cache
-            .update(
-                ItemsForShareCacheType,
-                |share_items: &mut ItemsForShareCache| {
-                    share_items.insert(share_id.clone(), serialized);
-                },
-            )
-            .await;
-
-        let items = opened.into_iter().map(|i| i.item).collect();
-        Ok(items)
+        Ok(opened.into_iter().map(|i| i.item).collect())
     }
 
     /// Lists the items directly inside `folder_id` (not in its subfolders)
@@ -171,48 +131,6 @@ impl<C: PassClientContext> PassClient<C> {
             .collect())
     }
 
-    async fn fetch_items(&self, share_id: &ShareId) -> Result<Vec<ItemRevision>> {
-        let mut items = Vec::new();
-        let mut pagination = SincePagination::default();
-        loop {
-            let mut req = GET!("/pass/v1/share/{}/item", share_id)
-                .query(("PageSize".to_string(), format!("{}", pagination.page_size)));
-
-            if let Some(ref since) = pagination.since {
-                req = req.query(("Since".to_string(), since.to_string()));
-            }
-
-            let res = self.send(req).await.context("Error fetching items page")?;
-
-            let response: GetItemsResponse = assert_response!(res);
-            let response_content = response.items;
-            let revisions = response_content.revisions;
-
-            trace!("Retrieved {} items", revisions.len());
-            if !revisions.is_empty() {
-                let retrieved_size = revisions.len();
-                items.extend(revisions);
-                if retrieved_size < pagination.page_size {
-                    break;
-                }
-
-                match pagination.next(response_content.last_token) {
-                    Some(p) => pagination = p,
-                    None => break,
-                }
-            } else {
-                break;
-            }
-        }
-
-        trace!(
-            "Finished item retrieval process. Retrieved {} items",
-            items.len()
-        );
-
-        Ok(items)
-    }
-
     #[sdk_export]
     pub async fn clear_items_cache(&self, share_id: &ShareId) {
         self.cache
@@ -223,12 +141,158 @@ impl<C: PassClientContext> PassClient<C> {
     }
 }
 
+impl<C: PassClientContext> PassClient<C> {
+    // Visits the items of `share_id` until `visit` breaks, returning the break value.
+    // Item pages are fetched and decrypted one at a time, so breaking skips the remaining
+    // requests. The items cache for the share is only populated once all pages were visited.
+    pub async fn list_items_until<B>(
+        &self,
+        share_id: &ShareId,
+        mut visit: impl FnMut(&Item) -> ControlFlow<B>,
+    ) -> Result<Option<B>> {
+        match self
+            .scan_items(share_id, |opened| visit(&opened.item))
+            .await?
+        {
+            ControlFlow::Break(value) => Ok(Some(value)),
+            ControlFlow::Continue(_) => Ok(None),
+        }
+    }
+
+    /// Returns the first item of `share_id` matching `predicate`, without listing past it.
+    pub async fn find_item_in_share(
+        &self,
+        share_id: &ShareId,
+        mut predicate: impl FnMut(&Item) -> bool,
+    ) -> Result<Option<Item>> {
+        self.list_items_until(share_id, |item| {
+            if predicate(item) {
+                ControlFlow::Break(item.clone())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .await
+    }
+
+    async fn scan_items<B>(
+        &self,
+        share_id: &ShareId,
+        mut visit: impl FnMut(&ItemWithItemKey) -> ControlFlow<B>,
+    ) -> Result<ControlFlow<B, Vec<ItemWithItemKey>>> {
+        if let Some(cached) = self.cached_items(share_id).await {
+            trace!("Visiting cached items for share {share_id}");
+            for item in &cached {
+                if let ControlFlow::Break(value) = visit(item) {
+                    return Ok(ControlFlow::Break(value));
+                }
+            }
+            return Ok(ControlFlow::Continue(cached));
+        }
+
+        let mut opened = Vec::new();
+        let mut pagination = SincePagination::default();
+        loop {
+            let page = self
+                .fetch_items_page(share_id, &pagination)
+                .await
+                .context("Error fetching items")?;
+            let page_size = page.revisions.len();
+            trace!("Retrieved {page_size} items");
+            if page_size == 0 {
+                break;
+            }
+
+            let opened_page = self
+                .open_items(share_id, page.revisions)
+                .await
+                .context("Error opening items")?;
+            for item in opened_page {
+                if let ControlFlow::Break(value) = visit(&item) {
+                    trace!("Stopped visiting items for share {share_id}, not caching them");
+                    return Ok(ControlFlow::Break(value));
+                }
+                opened.push(item);
+            }
+
+            if page_size < pagination.page_size {
+                break;
+            }
+            match pagination.next(page.last_token) {
+                Some(next) => pagination = next,
+                None => break,
+            }
+        }
+
+        trace!(
+            "Finished item retrieval process. Retrieved {} items",
+            opened.len()
+        );
+        self.store_cached_items(share_id, &opened).await?;
+        Ok(ControlFlow::Continue(opened))
+    }
+
+    async fn fetch_items_page(
+        &self,
+        share_id: &ShareId,
+        pagination: &SincePagination,
+    ) -> Result<ItemsList> {
+        let mut req = GET!("/pass/v1/share/{}/item", share_id)
+            .query(("PageSize".to_string(), format!("{}", pagination.page_size)));
+        if let Some(ref since) = pagination.since {
+            req = req.query(("Since".to_string(), since.to_string()));
+        }
+
+        let res = self.send(req).await.context("Error fetching items page")?;
+        let response: GetItemsResponse = assert_response!(res);
+        Ok(response.items)
+    }
+
+    async fn cached_items(&self, share_id: &ShareId) -> Option<Vec<ItemWithItemKey>> {
+        self.cache
+            .ensure_has_value(ItemsForShareCacheType, ItemsForShareCache::new)
+            .await;
+        let cached: ItemsForShareCache = self.cache.get(ItemsForShareCacheType).await?;
+        match cached.get(share_id)?.deserialize(self.memory_xor_key) {
+            Ok(items) => Some(items),
+            Err(e) => {
+                warn!("Error deserializing cached items: {e:#}");
+                None
+            }
+        }
+    }
+
+    async fn store_cached_items(
+        &self,
+        share_id: &ShareId,
+        items: &[ItemWithItemKey],
+    ) -> Result<()> {
+        let serialized = SerializedItemsWithKey::new(items, self.memory_xor_key)
+            .context("Error caching items")?;
+        self.cache
+            .ensure_has_value(ItemsForShareCacheType, ItemsForShareCache::new)
+            .await;
+        self.cache
+            .update(ItemsForShareCacheType, |cache: &mut ItemsForShareCache| {
+                cache.insert(share_id.clone(), serialized);
+            })
+            .await;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::CodeResponse;
     use crate::domain::{Item, ItemState};
     use crate::test_tools::*;
-    use std::sync::{Arc, atomic::AtomicBool};
+    use muon_test::server::Request as RecordedRequest;
+    use std::collections::VecDeque;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     fn setup_list_items_endpoint(
         server: &ProtonAPI,
@@ -247,6 +311,101 @@ mod tests {
                 })
             },
         )
+    }
+
+    const PAGED_SHARE_ID: &str = "PagedShareID";
+    const SECOND_PAGE_TOKEN: &str = "SecondPage";
+    // The test server drops a handler once it has answered, so register a few copies
+    const PAGED_HANDLER_COPIES: usize = 5;
+
+    struct PagedItems {
+        first_title: String,
+        last_title: String,
+        total: usize,
+    }
+
+    fn revision_for(item_id: String, encrypted: &EncryptItemContentsResult) -> ItemRevision {
+        ItemRevisionBuilder::new(item_id)
+            .with_content(crate::utils::b64_encode(&encrypted.encrypted_contents))
+            .with_item_key(Some(crate::utils::b64_encode(
+                &encrypted.encrypted_item_key,
+            )))
+            .with_state(ItemState::Active as u8)
+            .build()
+    }
+
+    /// Serves a full first page whose first item is unique, then a second page with one more
+    /// unique item. `fail_second_page` makes the second page fail while it is set.
+    fn setup_paged_items_endpoint(
+        api: &ProtonAPI,
+        fail_second_page: Arc<AtomicBool>,
+    ) -> PagedItems {
+        let page_size = SincePagination::default().page_size;
+        let first = create_random_item();
+        let filler = encrypt_item_contents(create_random_item());
+        let last = create_random_item();
+
+        let mut first_page = vec![revision_for(
+            "First".to_string(),
+            &encrypt_item_contents(first.clone()),
+        )];
+        first_page.extend((1..page_size).map(|i| revision_for(format!("Filler{i}"), &filler)));
+        let second_page = vec![revision_for(
+            "Last".to_string(),
+            &encrypt_item_contents(last.clone()),
+        )];
+
+        for _ in 0..PAGED_HANDLER_COPIES {
+            let first_page = first_page.clone();
+            let second_page = second_page.clone();
+            let fail_second_page = fail_second_page.clone();
+            api.handler_with_method(
+                Method::GET,
+                format!("/pass/v1/share/{PAGED_SHARE_ID}/item"),
+                move |req| {
+                    let is_second_page = req
+                        .uri()
+                        .query()
+                        .is_some_and(|q| q.contains(&format!("Since={SECOND_PAGE_TOKEN}")));
+                    if !is_second_page {
+                        return success(GetItemsResponse {
+                            items: ItemsList {
+                                revisions: first_page.clone(),
+                                last_token: Some(SECOND_PAGE_TOKEN.to_string()),
+                            },
+                        });
+                    }
+                    if fail_second_page.load(Ordering::Relaxed) {
+                        return response_from_status_and_payload(422, CodeResponse { code: 2001 });
+                    }
+                    success(GetItemsResponse {
+                        items: ItemsList {
+                            revisions: second_page.clone(),
+                            last_token: None,
+                        },
+                    })
+                },
+            );
+        }
+
+        PagedItems {
+            first_title: first.title,
+            last_title: last.title,
+            total: page_size + 1,
+        }
+    }
+
+    async fn paged_client(server: muon_test::Server) -> (TestPassClient, ProtonAPI) {
+        let (raw_client, api) = server.client::<()>();
+        let client = make_test_pass_client_with_setup(raw_client, &api, PlanType::Free).await;
+        setup_vault_share(&api, PAGED_SHARE_ID);
+        setup_share_keys(&api, PAGED_SHARE_ID);
+        (client, api)
+    }
+
+    fn item_page_requests(requests: &VecDeque<RecordedRequest<Vec<u8>>>) -> usize {
+        let path = format!("/pass/v1/share/{PAGED_SHARE_ID}/item");
+        requests.iter().filter(|r| r.uri().path() == path).count()
     }
 
     #[test]
@@ -592,5 +751,100 @@ mod tests {
         assert_eq!(1, items_2.len());
         assert_eq!(ITEM_ID, items_2[0].id.value());
         assert_eq!(item_data.title, items_2[0].content.title);
+    }
+
+    #[muon_test::test]
+    async fn test_find_item_in_share_stops_at_first_page(server: muon_test::Server) {
+        let (client, api) = paged_client(server).await;
+        let paged = setup_paged_items_endpoint(&api, Arc::new(AtomicBool::new(false)));
+        let share_id = share_id!(PAGED_SHARE_ID);
+
+        let recorder = api.new_recorder();
+        let found = client
+            .find_item_in_share(&share_id, |i| i.content.title == paged.first_title)
+            .await
+            .expect("Should be able to search items")
+            .expect("Item should be found");
+
+        assert_eq!("First", found.id.value());
+        assert_eq!(1, item_page_requests(&recorder.read()));
+    }
+
+    #[muon_test::test]
+    async fn test_list_items_until_break_does_not_cache(server: muon_test::Server) {
+        let (client, api) = paged_client(server).await;
+        let paged = setup_paged_items_endpoint(&api, Arc::new(AtomicBool::new(false)));
+        let share_id = share_id!(PAGED_SHARE_ID);
+
+        let recorder = api.new_recorder();
+        let mut visited = 0;
+        let found = client
+            .list_items_until(&share_id, |_| {
+                visited += 1;
+                ControlFlow::Break(visited)
+            })
+            .await
+            .expect("Should be able to search items");
+        assert_eq!(Some(1), found);
+
+        let items = client
+            .list_items(&share_id)
+            .await
+            .expect("Should be able to list items");
+
+        assert_eq!(paged.total, items.len());
+        assert_eq!(3, item_page_requests(&recorder.read()));
+    }
+
+    #[muon_test::test]
+    async fn test_list_items_until_exhausted_caches_all_pages(server: muon_test::Server) {
+        let (client, api) = paged_client(server).await;
+        let paged = setup_paged_items_endpoint(&api, Arc::new(AtomicBool::new(false)));
+        let share_id = share_id!(PAGED_SHARE_ID);
+
+        let recorder = api.new_recorder();
+        let missing = client
+            .find_item_in_share(&share_id, |i| i.content.title == "missing")
+            .await
+            .expect("Should be able to search items");
+        assert!(missing.is_none());
+        assert_eq!(2, item_page_requests(&recorder.read()));
+
+        let found = client
+            .find_item_in_share(&share_id, |i| i.content.title == paged.last_title)
+            .await
+            .expect("Should be able to search items")
+            .expect("Item should be found in cache");
+        let items = client
+            .list_items(&share_id)
+            .await
+            .expect("Should be able to list items");
+
+        assert_eq!("Last", found.id.value());
+        assert_eq!(paged.total, items.len());
+        assert_eq!(2, item_page_requests(&recorder.read()));
+    }
+
+    #[muon_test::test]
+    async fn test_list_items_failed_page_does_not_cache(server: muon_test::Server) {
+        let (client, api) = paged_client(server).await;
+        let fail_second_page = Arc::new(AtomicBool::new(true));
+        let paged = setup_paged_items_endpoint(&api, fail_second_page.clone());
+        let share_id = share_id!(PAGED_SHARE_ID);
+
+        client
+            .list_items(&share_id)
+            .await
+            .expect_err("Second page failure should fail the listing");
+
+        fail_second_page.store(false, Ordering::Relaxed);
+        let recorder = api.new_recorder();
+        let items = client
+            .list_items(&share_id)
+            .await
+            .expect("Should be able to list items");
+
+        assert_eq!(paged.total, items.len());
+        assert_eq!(2, item_page_requests(&recorder.read()));
     }
 }

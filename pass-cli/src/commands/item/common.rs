@@ -20,6 +20,7 @@
 use crate::helpers::CliPassClient as PassClient;
 use anyhow::{Context, Result, anyhow};
 use pass::domain::{ItemId, ShareId};
+use std::ops::ControlFlow;
 
 pub enum ShareQuery {
     ShareId(ShareId),
@@ -92,17 +93,19 @@ impl ItemQuery {
         match self {
             Self::ItemId(id) => Ok(id.clone()),
             Self::ItemTitle(title) => {
-                let items = client
-                    .list_items(share_id)
+                let matching_id = client
+                    .list_items_until(share_id, |item| {
+                        if item.content.title.eq(title) {
+                            ControlFlow::Break(item.id.clone())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    })
                     .await
-                    .context("Error listing items")?;
-
-                let matching_item = items
-                    .iter()
-                    .find(|item| item.content.title.eq(title))
+                    .context("Error listing items")?
                     .ok_or_else(|| anyhow!("No item found with title: {}", title))?;
 
-                Ok(matching_item.id.clone())
+                Ok(matching_id)
             }
         }
     }
