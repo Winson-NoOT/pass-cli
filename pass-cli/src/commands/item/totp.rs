@@ -153,17 +153,11 @@ pub async fn run(
 
                     item.item
                 }
-                ItemQuery::ItemTitle(title) => {
-                    let items = client
-                        .list_items(&share_id)
-                        .await
-                        .context("Error listing items")?;
-
-                    items
-                        .into_iter()
-                        .find(|item| item.content.title == title)
-                        .ok_or_else(|| anyhow!("No item found with title: {}", title))?
-                }
+                ItemQuery::ItemTitle(title) => client
+                    .find_item_in_share(&share_id, |item| item.content.title == title)
+                    .await
+                    .context("Error listing items")?
+                    .ok_or_else(|| anyhow!("No item found with title: {}", title))?,
             };
             (item, field)
         }

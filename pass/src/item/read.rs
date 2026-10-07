@@ -32,10 +32,16 @@ struct ItemReadReportedCacheType;
 
 type ItemReadReported = HashSet<(ShareId, ItemId)>;
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ItemTimesRequest {
+    #[serde(rename = "ItemTimes")]
+    pub item_times: Vec<ItemReadRequest>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ItemReadRequest {
-    #[serde(rename = "ItemIDs")]
-    item_ids: Vec<String>,
+    #[serde(rename = "ItemID")]
+    item_id: String,
     #[serde(rename = "Timestamp")]
     timestamp: i64,
 }
@@ -116,9 +122,15 @@ impl<C: PassClientContext> PassClient<C> {
     }
 
     async fn send_items_read(&self, share_id: &ShareId, item_ids: &[ItemId]) -> Result<u32> {
-        let body = ItemReadRequest {
-            item_ids: item_ids.iter().map(ToString::to_string).collect(),
-            timestamp: jiff::Timestamp::now().as_second(),
+        let now = jiff::Timestamp::now().as_second();
+        let body = ItemTimesRequest {
+            item_times: item_ids
+                .iter()
+                .map(|id| ItemReadRequest {
+                    item_id: id.to_string(),
+                    timestamp: now,
+                })
+                .collect(),
         };
         let req = PUT!("/pass/v1/share/{share_id}/item/read")
             .body_json(body)
@@ -142,7 +154,6 @@ mod tests {
     use crate::common::CodeResponse;
     use crate::test_tools::*;
     use muon_test::server::Request;
-    use serde_json::Value;
 
     const PUT_PATH: &str = "/pass/v1/share/share1/item/read";
     const ACCESS_PATH: &str = "/pass/v1/user/access";
@@ -207,9 +218,10 @@ mod tests {
             .into_iter()
             .find(|r| r.method().as_str() == "PUT")
             .unwrap();
-        let body: Value = serde_json::from_slice(put.body()).unwrap();
-        assert_eq!(serde_json::json!(["item1"]), body["ItemIDs"]);
-        let ts = body["Timestamp"].as_i64().unwrap();
+        let body: ItemTimesRequest = serde_json::from_slice(put.body()).unwrap();
+        assert_eq!(1, body.item_times.len());
+        assert_eq!("item1", body.item_times[0].item_id);
+        let ts = body.item_times[0].timestamp;
         assert!(ts >= before - 5 && ts <= after + 5);
     }
 
@@ -257,8 +269,8 @@ mod tests {
             .into_iter()
             .filter(|r| r.method().as_str() == "PUT" && r.uri().path() == PUT_PATH)
             .map(|r| {
-                let body: Value = serde_json::from_slice(r.body()).unwrap();
-                body["ItemIDs"].as_array().unwrap().len()
+                let body: ItemTimesRequest = serde_json::from_slice(r.body()).unwrap();
+                body.item_times.len()
             })
             .collect();
         assert_eq!(vec![100, 100, 50], sizes);
