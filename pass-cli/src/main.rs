@@ -142,6 +142,11 @@ enum Commands {
         #[command(subcommand)]
         command: commands::item::ItemCommands,
     },
+    #[command(about = "Folder operations")]
+    Folder {
+        #[command(subcommand)]
+        command: commands::folder::FolderCommands,
+    },
     #[command(about = "Invite operations")]
     Invite {
         #[command(subcommand)]
@@ -390,6 +395,7 @@ async fn run() -> Result<()> {
         } => commands::run::run(env_files, no_masking, command, client).await,
         Commands::Vault { command } => commands::vault::run(command, client).await,
         Commands::Item { command } => commands::item::run(command, client).await,
+        Commands::Folder { command } => commands::folder::run(command, client).await,
         Commands::Invite { command } => commands::invite::run(command, client).await,
         Commands::Share { command } => commands::share::run(command, client).await,
         Commands::Session { command } => commands::session::run(command, client, store).await,
