@@ -539,6 +539,44 @@ QUOTED_VAR='some value'
         assert_eq!(secret_refs["API_KEY"], "pass://api/service/key");
     }
 
+    #[tokio::test]
+    async fn test_non_ascii_field_reference_in_env_var_resolves() {
+        use crate::commands::secret_resolver::tests::StaticSecretResolver;
+
+        let env_vars = vec![
+            EnvVar {
+                name: "API_KEY".to_string(),
+                value: "pass://share123/item456/API 키".to_string(),
+            },
+            EnvVar {
+                name: "API_KEY_ENCODED".to_string(),
+                value: "pass://share123/item456/API%20%ED%82%A4".to_string(),
+            },
+            EnvVar {
+                name: "ROLE".to_string(),
+                value: "pass://share123/item456/권한".to_string(),
+            },
+        ];
+
+        let secret_refs = find_secret_references(&env_vars).unwrap();
+        assert_eq!(secret_refs.len(), 3);
+
+        let resolver = StaticSecretResolver::new()
+            .with_secret("share123", "item456", "API 키", "korean_api_key")
+            .with_secret("share123", "item456", "권한", "admin");
+        let cache = SecretCache::new();
+
+        for (name, expected) in [
+            ("API_KEY", "korean_api_key"),
+            ("API_KEY_ENCODED", "korean_api_key"),
+            ("ROLE", "admin"),
+        ] {
+            let secret_ref = SecretReference::parse(&secret_refs[name]).unwrap();
+            let value = cache.get_or_resolve(&secret_ref, &resolver).await.unwrap();
+            assert_eq!(value, expected, "variable: {name}");
+        }
+    }
+
     #[test]
     fn test_find_secret_references_rejects_unparseable_references() {
         let env_vars = vec![

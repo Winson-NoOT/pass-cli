@@ -710,6 +710,27 @@ api:
     }
 
     #[tokio::test]
+    async fn template_processor_with_non_ascii_field_names() {
+        let resolver = StaticSecretResolver::new()
+            .with_secret("share123", "item456", "API 키", "korean_api_key")
+            .with_secret("share123", "item456", "Пароль", "cyrillic_password");
+
+        let processor = TemplateProcessor::new(resolver);
+
+        let template = r#"
+api_key: {{ pass://share123/item456/API 키 }}
+api_key_encoded: {{ pass://share123/item456/API%20%ED%82%A4 }}
+password: {{ pass://share123/item456/Пароль }}
+"#;
+
+        let result = processor.process_template(template).await.unwrap();
+
+        assert!(result.contains("api_key: korean_api_key"));
+        assert!(result.contains("api_key_encoded: korean_api_key"));
+        assert!(result.contains("password: cyrillic_password"));
+    }
+
+    #[tokio::test]
     async fn template_processor_multiple_occurences() {
         let resolver =
             StaticSecretResolver::new().with_secret("test", "item", "field", "same_value");

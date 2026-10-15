@@ -56,12 +56,11 @@ pub struct SecretReference {
 
 impl ItemReference {
     pub fn parse(uri: &str) -> Result<Self> {
-        // Percent-encode spaces; raw spaces are not valid URI characters,
-        // but we allow them as a convenience.
-        let normalized = uri.trim().replace(' ', "%20");
+        let uri = uri.trim();
+        let normalized = encode_reference_input(uri);
 
         // ensure_format borrows normalized and returns a Uri<&str> tied to it.
-        let parsed = Self::ensure_format(&normalized)?;
+        let parsed = Self::ensure_format(&normalized, uri)?;
 
         let auth = parsed.authority().ok_or_else(|| {
             anyhow!(
@@ -155,8 +154,8 @@ impl ItemReference {
 
     // Takes a borrowed str so the returned Uri<&str> can borrow from it without
     // the ownership transfer that would drop the backing string too early.
-    fn ensure_format(uri: &str) -> Result<Uri<&str>> {
-        let parsed = Uri::parse(uri).map_err(|_| {
+    fn ensure_format<'a>(normalized: &'a str, uri: &str) -> Result<Uri<&'a str>> {
+        let parsed = Uri::parse(normalized).map_err(|_| {
             anyhow!(
                 "Invalid reference format. Expected: pass://SHARE_ID/ITEM_ID[/FIELD], got: [{}]",
                 uri
@@ -179,6 +178,21 @@ impl ItemReference {
 
         Ok(parsed)
     }
+}
+
+fn encode_reference_input(uri: &str) -> String {
+    let mut out = String::with_capacity(uri.len());
+    for c in uri.chars() {
+        if c == ' ' || !c.is_ascii() {
+            let mut buf = [0u8; 4];
+            for byte in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 impl SecretReference {
@@ -566,6 +580,118 @@ pub(crate) mod tests {
         assert_eq!(result.share_id, "My Vault");
         assert_eq!(result.item_id, "My Item");
         assert_eq!(result.field_name, "My Field");
+    }
+
+    #[test]
+    fn item_reference_with_non_ascii_field_and_space() {
+        let result = ItemReference::parse("pass://share123/item456/API 키").unwrap();
+        assert_eq!(result.share_id, "share123");
+        assert_eq!(result.item_id, "item456");
+        assert_eq!(result.field_name, Some("API 키".to_string()));
+    }
+
+    #[test]
+    fn item_reference_with_non_ascii_field_percent_encoded() {
+        let raw = ItemReference::parse("pass://share123/item456/API 키").unwrap();
+        let encoded = ItemReference::parse("pass://share123/item456/API%20%ED%82%A4").unwrap();
+        assert_eq!(raw, encoded);
+    }
+
+    #[test]
+    fn item_reference_with_mixed_raw_and_encoded_non_ascii_field() {
+        let result = ItemReference::parse("pass://share123/item456/API%20키").unwrap();
+        assert_eq!(result.field_name, Some("API 키".to_string()));
+    }
+
+    #[test]
+    fn item_reference_with_various_non_ascii_fields() {
+        for field in [
+            "권한",
+            "Пароль",
+            "contraseña",
+            "clé d'accès",
+            "🔑 token",
+            "日本語/サブ",
+        ] {
+            let uri = format!("pass://share123/item456/{field}");
+            let result = ItemReference::parse(&uri).unwrap();
+            assert_eq!(result.field_name.as_deref(), Some(field), "uri: {uri}");
+        }
+    }
+
+    #[test]
+    fn item_reference_with_non_ascii_vault_and_item_names() {
+        let result = ItemReference::parse("pass://개인 금고/내 항목/API 키").unwrap();
+        assert_eq!(result.share_id, "개인 금고");
+        assert_eq!(result.item_id, "내 항목");
+        assert_eq!(result.field_name, Some("API 키".to_string()));
+    }
+
+    #[test]
+    fn item_reference_with_non_ascii_field_and_totp() {
+        let result = ItemReference::parse("pass://share123/item456/일회용 코드?totp=uri").unwrap();
+        assert_eq!(result.field_name, Some("일회용 코드".to_string()));
+        assert_eq!(result.totp, Some(TotpOutput::Uri));
+    }
+
+    #[test]
+    fn item_reference_preserves_unicode_normalization_form() {
+        let nfc = "caf\u{e9}";
+        let nfd = "cafe\u{301}";
+        let parsed_nfc = ItemReference::parse(&format!("pass://s/i/{nfc}")).unwrap();
+        let parsed_nfd = ItemReference::parse(&format!("pass://s/i/{nfd}")).unwrap();
+        assert_eq!(parsed_nfc.field_name.as_deref(), Some(nfc));
+        assert_eq!(parsed_nfd.field_name.as_deref(), Some(nfd));
+    }
+
+    #[test]
+    fn item_reference_whitespace_handling_with_non_ascii_field() {
+        let trimmed = ItemReference::parse("  pass://s/i/API 키  ").unwrap();
+        assert_eq!(trimmed.field_name, Some("API 키".to_string()));
+
+        let explicit = ItemReference::parse("pass://s/i/%20API 키%20").unwrap();
+        assert_eq!(explicit.field_name, Some(" API 키 ".to_string()));
+    }
+
+    #[test]
+    fn item_reference_malformed_non_ascii_still_errors() {
+        let invalid_uris = [
+            "pass://share123",
+            "pass://share123/",
+            "pass://share123/item456/키/",
+            "키://share123/item456/field",
+            "share123/item456/키",
+            "pass:///item456/키",
+        ];
+        for uri in invalid_uris {
+            let err = ItemReference::parse(uri).unwrap_err().to_string();
+            assert!(
+                err.contains("Invalid reference format"),
+                "uri: {uri}, err: {err}"
+            );
+            assert!(err.contains(uri), "uri: {uri}, err: {err}");
+        }
+    }
+
+    #[test]
+    fn find_pass_uri_detects_non_ascii_reference() {
+        assert_eq!(
+            find_pass_uri("pass://share123/item456/API 키"),
+            Some("pass://share123/item456/API 키".to_string())
+        );
+        assert_eq!(find_pass_uri("pass://share123/item456/키/"), None);
+    }
+
+    #[test]
+    fn encode_reference_input_only_escapes_spaces_and_non_ascii() {
+        assert_eq!(
+            encode_reference_input("pass://s/i/API 키?totp=uri"),
+            "pass://s/i/API%20%ED%82%A4?totp=uri"
+        );
+        assert_eq!(
+            encode_reference_input("pass://s/i/a%20b%ED%82%A4"),
+            "pass://s/i/a%20b%ED%82%A4"
+        );
     }
 
     #[tokio::test]
