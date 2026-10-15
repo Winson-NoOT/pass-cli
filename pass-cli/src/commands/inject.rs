@@ -21,17 +21,23 @@ use super::secret_resolver::{PassClientResolver, SecretReference, SecretResolver
 use crate::commands::item::agent_monitor::ensure_reason_if_agent;
 use crate::helpers::CliPassClient as PassClient;
 use crate::telemetry::event::CommandEvent;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::ops::Range;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 fn compile_pass_uri_regex() -> Result<Regex> {
     Regex::new(r"\{\{\s*(pass://[^}]+)\s*\}\}")
         .map_err(|e| anyhow!("Failed to compile pass URI regex: {}", e))
+}
+
+fn compile_pass_uri_opening_regex() -> Result<Regex> {
+    Regex::new(r"\{\{\s*pass://")
+        .map_err(|e| anyhow!("Failed to compile pass URI opening regex: {}", e))
 }
 
 fn write_temp(temp_path: &std::path::Path, content: &str, mode: u32) -> Result<()> {
@@ -169,31 +175,21 @@ impl<R: SecretResolver> TemplateProcessor<R> {
     }
 
     pub async fn process_template(&self, template: &str) -> Result<String> {
-        // Now use regex to find pass:// URIs within handlebars expressions
-        // This regex ensures we only match URIs that are within {{ }} blocks
-        let pass_ref_re = compile_pass_uri_regex()?;
+        let references = parse_template_references(template)?;
 
         let mut cache = self.secrets_cache.lock().await;
 
         let mut result = String::with_capacity(template.len());
         let mut last_end = 0;
 
-        for captures in pass_ref_re.captures_iter(template) {
-            let whole_match = captures
-                .get(0)
-                .ok_or_else(|| anyhow!("Failed to extract match span for pass URI in template"))?;
-            result.push_str(&template[last_end..whole_match.start()]);
-            last_end = whole_match.end();
-
-            let uri = captures
-                .get(1)
-                .ok_or_else(|| anyhow!("Failed to extract pass URI from template expression"))?
-                .as_str()
-                .trim();
-
-            // Parse the URI
-            let secret_ref = SecretReference::parse(uri)
-                .with_context(|| format!("Invalid secret reference: {uri}"))?;
+        for TemplateReference {
+            span,
+            uri,
+            secret_ref,
+        } in references
+        {
+            result.push_str(&template[last_end..span.start]);
+            last_end = span.end;
 
             // Create cache key
             let cache_key = SecretCacheKey {
@@ -230,6 +226,75 @@ impl<R: SecretResolver> TemplateProcessor<R> {
 
         Ok(result)
     }
+}
+
+#[derive(Debug)]
+struct TemplateReference<'a> {
+    span: Range<usize>,
+    uri: &'a str,
+    secret_ref: SecretReference,
+}
+
+fn parse_template_references(template: &str) -> Result<Vec<TemplateReference<'_>>> {
+    let pass_ref_re = compile_pass_uri_regex()?;
+    let opening_re = compile_pass_uri_opening_regex()?;
+
+    let mut references = Vec::new();
+    let mut expression_spans: Vec<Range<usize>> = Vec::new();
+    let mut invalid_refs: Vec<String> = Vec::new();
+
+    for captures in pass_ref_re.captures_iter(template) {
+        let whole_match = captures
+            .get(0)
+            .ok_or_else(|| anyhow!("Failed to extract match span for pass URI in template"))?;
+        let uri = captures
+            .get(1)
+            .ok_or_else(|| anyhow!("Failed to extract pass URI from template expression"))?
+            .as_str()
+            .trim();
+        expression_spans.push(whole_match.range());
+
+        match SecretReference::parse(uri) {
+            Ok(secret_ref) => references.push(TemplateReference {
+                span: whole_match.range(),
+                uri,
+                secret_ref,
+            }),
+            Err(e) => invalid_refs.push(format!(
+                "  line {}: {e:#}",
+                line_number(template, whole_match.start())
+            )),
+        }
+    }
+
+    for opening in opening_re.find_iter(template) {
+        if !expression_spans
+            .iter()
+            .any(|span| span.contains(&opening.start()))
+        {
+            let line_end = template[opening.start()..]
+                .find('\n')
+                .map_or(template.len(), |i| opening.start() + i);
+            invalid_refs.push(format!(
+                "  line {}: Unterminated template expression, expected a closing '}}}}': {}",
+                line_number(template, opening.start()),
+                template[opening.start()..line_end].trim_end()
+            ));
+        }
+    }
+
+    if !invalid_refs.is_empty() {
+        bail!(
+            "Invalid secret references found in template:\n{}",
+            invalid_refs.join("\n")
+        );
+    }
+
+    Ok(references)
+}
+
+fn line_number(text: &str, byte_offset: usize) -> usize {
+    text[..byte_offset].matches('\n').count() + 1
 }
 
 /// Parses a file mode string into a u32 value
@@ -694,6 +759,50 @@ actual_password: {{ pass://real/secret/password }}
         assert!(result.contains("pass://docs/wiki/setup")); // Comment preserved  
         assert!(result.contains("pass://real/secret/password (not templated)")); // Comment preserved
         assert!(result.contains("actual_password: should_replace")); // Template replaced
+    }
+
+    #[test]
+    fn parse_template_references_rejects_all_invalid_references() {
+        let template = concat!(
+            "VALID={{ pass://vault/item/password }}\n",
+            "MISSING_FIELD={{ pass://vault/item }}\n",
+            "BAD_TOTP={{ pass://vault/item/field?totp=nope }}\n",
+            "BAD_CHARS={{ pass://vault/item [prod]/password }}\n",
+        );
+
+        let err = parse_template_references(template).unwrap_err().to_string();
+
+        assert!(
+            err.contains("line 2: Secret reference requires a field name"),
+            "{err}"
+        );
+        assert!(
+            err.contains("line 3: Unknown totp output format 'nope'"),
+            "{err}"
+        );
+        assert!(err.contains("line 4:"), "{err}");
+        assert!(!err.contains("line 1:"), "{err}");
+    }
+
+    #[test]
+    fn parse_template_references_rejects_unterminated_expressions() {
+        let template = concat!(
+            "VALID={{ pass://vault/item/password }}\n",
+            "SINGLE_BRACE={{ pass://vault/item/password }\n",
+            "UNCLOSED={{pass://vault/item/password\n",
+        );
+
+        let err = parse_template_references(template).unwrap_err().to_string();
+
+        assert!(
+            err.contains("line 2: Unterminated template expression, expected a closing '}}': {{ pass://vault/item/password }"),
+            "{err}"
+        );
+        assert!(
+            err.contains("line 3: Unterminated template expression, expected a closing '}}': {{pass://vault/item/password"),
+            "{err}"
+        );
+        assert!(!err.contains("line 1:"), "{err}");
     }
 
     /// Resolver that compares the full parsed tuple by equality, rather than
