@@ -17,7 +17,9 @@
  *
  */
 
-use super::secret_resolver::{PassClientResolver, SecretCache, SecretReference, find_pass_uri};
+use super::secret_resolver::{
+    PASS_URI_PREFIX, PassClientResolver, SecretCache, SecretReference, find_pass_uri,
+};
 use crate::helpers::CliPassClient as PassClient;
 use crate::telemetry::event::CommandEvent;
 
@@ -138,11 +140,26 @@ fn get_environment_variables(env_files: &[String]) -> Result<Vec<EnvVar>> {
 
 fn find_secret_references(env_vars: &[EnvVar]) -> Result<HashMap<String, String>> {
     let mut secret_map: HashMap<String, String> = HashMap::new();
+    let mut invalid_refs: Vec<String> = Vec::new();
 
     for env_var in env_vars {
-        if let Some(uri) = find_pass_uri(&env_var.value) {
-            secret_map.insert(env_var.name.clone(), uri);
+        if !env_var.value.starts_with(PASS_URI_PREFIX) {
+            continue;
         }
+        match SecretReference::parse(&env_var.value) {
+            Ok(_) => {
+                secret_map.insert(env_var.name.clone(), env_var.value.clone());
+            }
+            Err(e) => invalid_refs.push(format!("  {}: {e:#}", env_var.name)),
+        }
+    }
+
+    if !invalid_refs.is_empty() {
+        invalid_refs.sort();
+        bail!(
+            "Invalid secret references found in the following variables:\n{}",
+            invalid_refs.join("\n")
+        );
     }
 
     Ok(secret_map)
@@ -520,6 +537,35 @@ QUOTED_VAR='some value'
 
         assert_eq!(secret_refs["DB_PASSWORD"], "pass://prod/db/password");
         assert_eq!(secret_refs["API_KEY"], "pass://api/service/key");
+    }
+
+    #[test]
+    fn test_find_secret_references_rejects_unparseable_references() {
+        let env_vars = vec![
+            EnvVar {
+                name: "VALID".to_string(),
+                value: "pass://vault/item/password".to_string(),
+            },
+            EnvVar {
+                name: "MISSING_FIELD".to_string(),
+                value: "pass://vault/item".to_string(),
+            },
+            EnvVar {
+                name: "BAD_TOTP".to_string(),
+                value: "pass://vault/item/field?totp=nope".to_string(),
+            },
+            EnvVar {
+                name: "BAD_CHARS".to_string(),
+                value: "pass://vault/item [prod]/password".to_string(),
+            },
+        ];
+
+        let err = find_secret_references(&env_vars).unwrap_err().to_string();
+
+        assert!(err.contains("MISSING_FIELD"), "{err}");
+        assert!(err.contains("BAD_TOTP"), "{err}");
+        assert!(err.contains("BAD_CHARS"), "{err}");
+        assert!(!err.contains("VALID:"), "{err}");
     }
 
     #[test]

@@ -310,9 +310,11 @@ impl SecretCache {
     }
 }
 
+pub const PASS_URI_PREFIX: &str = "pass://";
+
 /// Finds all pass:// URIs in the given text
 pub fn find_pass_uri(text: &str) -> Option<String> {
-    if text.starts_with("pass://") && ItemReference::parse(text).is_ok() {
+    if text.starts_with(PASS_URI_PREFIX) && ItemReference::parse(text).is_ok() {
         return Some(text.to_string());
     }
 
