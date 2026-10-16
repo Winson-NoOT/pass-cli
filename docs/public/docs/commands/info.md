@@ -99,7 +99,7 @@ If `pass-cli info` fails:
 If the wrong user is shown:
 
 1. Logout: `pass-cli logout`
-2. Login with correct account: `pass-cli login --interactive correct@email.com`
+2. Login again with the correct account: `pass-cli login`
 
 ## Privacy considerations
 

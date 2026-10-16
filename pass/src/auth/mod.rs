@@ -21,7 +21,6 @@ pub mod callbacks;
 pub mod config;
 pub mod error;
 pub mod extra_password;
-pub mod interactive_login;
 pub mod personal_access_token;
 pub mod post_login;
 pub mod storage;

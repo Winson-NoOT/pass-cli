@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 default = []
+internal = []
 tokio-runtime = ["dep:tokio", "dep:async-compat", "muon/transport-hyper"]
 wasm = [
     "dep:wasm-bindgen",

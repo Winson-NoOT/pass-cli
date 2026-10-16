@@ -74,5 +74,5 @@ tempfile.workspace = true
 
 [features]
 default = []
-internal = ["tempfile"]
+internal = ["tempfile", "pass/internal"]
 no-login-restriction = []

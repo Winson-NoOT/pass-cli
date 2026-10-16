@@ -22,9 +22,7 @@ use crate::auth::config::ClientConfig;
 use crate::auth::runtime::{AuthRuntime, ClientWithStore};
 use crate::auth::storage::SessionStorage;
 use crate::auth::store::PassSessionStore;
-use crate::auth::{
-    extra_password, interactive_login, personal_access_token, post_login, web_login,
-};
+use crate::auth::{extra_password, personal_access_token, post_login, web_login};
 use crate::domain::{AccountType, LocalKeyProvider};
 use crate::{FirstTimeSetupKey, PassClient};
 use anyhow::{Context as _, Result, bail};
@@ -36,14 +34,14 @@ use zeroize::Zeroizing;
 pub struct Authenticator<R: AuthRuntime> {
     key_provider: Arc<dyn LocalKeyProvider>,
     storage: Arc<dyn SessionStorage>,
-    event_handler: Arc<dyn AuthEventHandler>,
+    pub(crate) event_handler: Arc<dyn AuthEventHandler>,
     credential_provider: Arc<dyn CredentialProvider>,
     config: ClientConfig,
-    sdk: Sdk,
+    pub(crate) sdk: Sdk,
     runtime: R,
 }
 
-async fn persist_store(store: &Arc<RwLock<PassSessionStore>>) -> Result<()> {
+pub(crate) async fn persist_store(store: &Arc<RwLock<PassSessionStore>>) -> Result<()> {
     let store_snapshot = {
         let store_guard = store.read();
         store_guard.clone()
@@ -160,64 +158,6 @@ impl<R: AuthRuntime> Authenticator<R> {
 
         let passphrase = login_result.session_payload.passphrase();
         Ok((pass_client, passphrase))
-    }
-
-    pub async fn login_interactive(
-        &self,
-        client: muon::Client<R::Context>,
-        client_features: Arc<dyn crate::domain::ClientFeatures>,
-        store: Arc<RwLock<PassSessionStore>>,
-        username: Option<String>,
-    ) -> Result<(PassClient<R::Context>, Zeroizing<String>)> {
-        let session = client.get_session(()).await;
-        if let Some(session) = session
-            && session.is_authenticated().await
-        {
-            self.event_handler
-                .on_info("Client is already authenticated. Log out if you want to log in again")
-                .await?;
-            bail!("Already authenticated");
-        }
-
-        let username = match username {
-            Some(u) => u,
-            None => self.credential_provider.get_username().await?,
-        };
-
-        info!("Logging in user: {}", username);
-
-        {
-            let mut store_guard = store.write();
-            store_guard.set_account_type(AccountType::User);
-        }
-
-        let auth_result = interactive_login::perform_interactive_login(
-            client,
-            &username,
-            store.clone(),
-            self.credential_provider.clone(),
-            self.event_handler.clone(),
-            &self.sdk,
-        )
-        .await
-        .context("Error in interactive login flow")?;
-
-        persist_store(&store).await?;
-
-        info!("Logged in user: {}", username);
-
-        let pass_client = PassClient::new(
-            auth_result.client,
-            client_features,
-            AccountType::User,
-            self.sdk.clone(),
-        );
-
-        self.event_handler
-            .on_info(&format!("Successfully logged in as {}", username))
-            .await?;
-
-        Ok((pass_client, auth_result.password))
     }
 
     pub async fn login_personal_access_token(

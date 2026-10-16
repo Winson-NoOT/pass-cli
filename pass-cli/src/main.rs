@@ -39,6 +39,8 @@ mod constants;
 mod env_config;
 mod features;
 mod helpers;
+#[cfg(feature = "internal")]
+mod internal;
 mod logs;
 mod storage;
 mod telemetry;
@@ -67,11 +69,9 @@ enum Commands {
     },
     #[command(about = "Log in (defaults to web login)")]
     Login {
-        #[arg(help = "The username to log in with (for interactive mode)")]
-        username: Option<String>,
-
-        #[arg(long, help = "Use interactive login mode")]
-        interactive: bool,
+        #[cfg(feature = "internal")]
+        #[command(flatten)]
+        interactive_login: internal::login::InteractiveLoginArgs,
 
         #[arg(
             long,
@@ -282,38 +282,37 @@ async fn run() -> Result<()> {
         .context("Error getting client")?;
     match &cli.command {
         Commands::Login {
-            username,
-            interactive,
+            pat: personal_access_token,
             ..
         } => {
-            // Extract personal_access_token field when feature is enabled
-            if let Commands::Login {
-                pat: personal_access_token,
-                ..
-            } = &cli.command
+            if personal_access_token.is_some()
+                || std::env::var(PERSONAL_ACCESS_TOKEN_ENV_VAR).is_ok()
             {
-                // Route to personal access token login if --service-account is provided
-                if personal_access_token.is_some()
-                    || std::env::var(PERSONAL_ACCESS_TOKEN_ENV_VAR).is_ok()
-                {
-                    return commands::login_pat::run(
-                        personal_access_token.clone(),
-                        client,
-                        client_features,
-                        store,
-                    )
-                    .await;
-                }
+                return commands::login_pat::run(
+                    personal_access_token.clone(),
+                    client,
+                    client_features,
+                    store,
+                )
+                .await;
             }
 
-            return commands::login::run(
-                username.as_deref(),
-                *interactive,
-                client,
-                client_features,
-                store,
-            )
-            .await;
+            #[cfg(feature = "internal")]
+            if let Commands::Login {
+                interactive_login, ..
+            } = &cli.command
+                && interactive_login.interactive
+            {
+                return internal::login::run_interactive(
+                    interactive_login,
+                    client,
+                    client_features,
+                    store,
+                )
+                .await;
+            }
+
+            return commands::login::run(client, client_features, store).await;
         }
         Commands::Password { command } => {
             return commands::password::run(command).await;
