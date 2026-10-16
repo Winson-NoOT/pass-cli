@@ -50,6 +50,8 @@ mod feature_flags;
 mod first_time_setup;
 mod folder;
 mod info;
+#[cfg(feature = "internal")]
+pub mod internal;
 mod invite;
 mod item;
 mod local_crypto;

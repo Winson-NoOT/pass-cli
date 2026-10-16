@@ -21,6 +21,11 @@ tmp_bindings_dir := target_dir / "tmp-bindings"
 mobile_lib := "pass_mobile_sdk"
 host_lib_ext := if os() == "macos" { "dylib" } else { "so" }
 
+# Cargo features of the SDK builds. Empty (the default) for anything that is released;
+# `internal` adds the username/password login the e2e tests use.
+
+sdk_features := env("PASS_SDK_FEATURES", "")
+
 # The host library uniffi-bindgen reads the bindings metadata from.
 
 bindings_lib_ext := if os() == "macos" { "dylib" } else { "a" }
@@ -37,9 +42,9 @@ default:
 
 # Build the npm package into pass-web-sdk/dist (extra args go to wasm-pack)
 web-sdk *args:
-    {{ web_sdk_dir }}/build-npm.sh {{ args }}
+    {{ web_sdk_dir }}/build-npm.sh {{ args }} {{ if sdk_features == "" { "" } else { "-- --features " + sdk_features } }}
 
-# Build the npm package and run its e2e test (needs PROTON_PASS_USERNAME/PROTON_PASS_PASSWORD)
+# Build the npm package and run its e2e test (needs PASS_SDK_FEATURES=internal and PROTON_PASS_USERNAME/PROTON_PASS_PASSWORD)
 web-sdk-test: web-sdk
     cd {{ web_sdk_dir }}/test && bun install --force && bun test
 
@@ -81,8 +86,9 @@ android-sdk-package *abis="arm64-v8a armeabi-v7a x86_64":
     done
     cd {{ android_dir }} && ./gradlew :lib:assembleRelease --no-configuration-cache
 
-# Build the host library and fresh Kotlin bindings the JVM tests run against (into libTest/src/main)
-android-sdk-host: (_bindings "kotlin" "--no-format")
+# Build the host library and fresh Kotlin bindings the JVM tests run against (into libTest/src/main).
+# Test-only, never released: always built with `internal`, as the e2e tests use username/password login.
+android-sdk-host: (_bindings "kotlin" "internal" "--no-format")
     rm -rf {{ android_test_dir }}
     mkdir -p {{ android_test_dir }}/kotlin {{ android_test_dir }}/jniLibs/{{ jna_platform }}
     cp -r {{ tmp_bindings_dir }}/* {{ android_test_dir }}/kotlin/
@@ -108,7 +114,7 @@ _android-lib abi:
     esac
     # From pass-mobile-sdk/, cargo also reads the NDK config CI puts in pass-mobile-sdk/.cargo/
     cd {{ mobile_sdk_dir }}
-    cargo build -p pass-mobile-sdk --release --target "${target}"
+    cargo build -p pass-mobile-sdk --release --target "${target}" {{ if sdk_features == "" { "" } else { "--features " + sdk_features } }}
     lib="{{ target_dir }}/${target}/release/lib{{ mobile_lib }}.so"
     stripped=false
     for tool in ${strip_tools}; do
@@ -130,7 +136,7 @@ ios-sdk slices="all": (_bindings "swift")
     cat {{ tmp_bindings_dir }}/*.modulemap > {{ ios_header_dir }}/module.modulemap
     cp {{ tmp_bindings_dir }}/*.swift {{ ios_sources_dir }}/
 
-    build() { cargo build -p pass-mobile-sdk --release --target "$1"; }
+    build() { cargo build -p pass-mobile-sdk --release --target "$1" {{ if sdk_features == "" { "" } else { "--features " + sdk_features } }}; }
     lib() { echo "{{ target_dir }}/$1/release/lib{{ mobile_lib }}.a"; }
     case "{{ slices }}" in
         all)
@@ -164,14 +170,14 @@ python-sdk *args:
     maturin="maturin"
     command -v maturin >/dev/null || maturin="uvx maturin"
     cd {{ python_sdk_dir }}
-    ${maturin} build --release --out dist {{ args }}
+    ${maturin} build --release --out dist {{ if sdk_features == "" { "" } else { "--features " + sdk_features } }} {{ args }}
     echo "Python wheel ready in {{ python_dist_dir }}"
 
 # Run the Python unit tests (no network) against the wheel in pass-python-sdk/dist (extra args go to pytest)
 python-sdk-test *args: python-sdk
     just _python-sdk-pytest tests/unit {{ args }}
 
-# Run the Python e2e tests against a real backend (needs PROTON_PASS_USERNAME/PROTON_PASS_PASSWORD; extra args go to pytest)
+# Run the Python e2e tests against a real backend (needs PASS_SDK_FEATURES=internal and PROTON_PASS_USERNAME/PROTON_PASS_PASSWORD; extra args go to pytest)
 python-sdk-e2e-test *args: python-sdk
     just _python-sdk-pytest tests/e2e {{ args }}
 
@@ -183,9 +189,9 @@ _python-sdk-pytest path *args:
 
 # --- Shared
 
-# Generates the bindings for `language` from a host build into target/tmp-bindings
-_bindings language *flags:
-    cargo build --release -p pass-mobile-sdk
+# Generates the bindings for `language` from a host build with `features` into target/tmp-bindings
+_bindings language features=sdk_features *flags:
+    cargo build --release -p pass-mobile-sdk {{ if features == "" { "" } else { "--features " + features } }}
     rm -rf {{ tmp_bindings_dir }} && mkdir -p {{ tmp_bindings_dir }}
     cargo run -q -p pass-uniffi-bindgen -- generate \
         --library {{ target_dir }}/release/lib{{ mobile_lib }}.{{ bindings_lib_ext }} \

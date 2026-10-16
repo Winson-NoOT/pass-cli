@@ -72,34 +72,30 @@ pub(crate) async fn after_login(
 }
 
 pub async fn run(
-    username: Option<&str>,
-    interactive: bool,
     client: TokioClient,
     client_features: Arc<CliClientFeatures>,
     store: Arc<RwLock<PassSessionStore>>,
 ) -> Result<()> {
     let authenticator = create_authenticator(client_features.clone())?;
 
-    let (pass_client, key) = if interactive {
-        // Interactive login
-        let (client, password) = authenticator
-            .login_interactive(
-                client,
-                client_features.clone(),
-                store.clone(),
-                username.map(|s| s.to_string()),
-            )
-            .await?;
-        (client, FirstTimeSetupKey::UserPassword(password))
-    } else {
-        // Web login
-        let (client, passphrase) = authenticator
-            .login_web(client, client_features.clone(), store.clone())
-            .await?;
-        (client, FirstTimeSetupKey::Passphrase(passphrase))
-    };
+    let (pass_client, passphrase) = authenticator
+        .login_web(client, client_features.clone(), store.clone())
+        .await?;
 
-    after_login(&pass_client, key, store).await?;
+    finish_login(
+        &pass_client,
+        FirstTimeSetupKey::Passphrase(passphrase),
+        store,
+    )
+    .await
+}
+
+pub(crate) async fn finish_login(
+    pass_client: &PassClient,
+    key: FirstTimeSetupKey,
+    store: Arc<RwLock<PassSessionStore>>,
+) -> Result<()> {
+    after_login(pass_client, key, store).await?;
 
     let user_info = pass_client.get_info().await?;
     println!("Successfully logged in as {}", user_info.user.email);
