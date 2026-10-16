@@ -45,38 +45,11 @@ pub struct BinaryInfo {
     pub hash: String,
 }
 
-// Certificate pinning for release builds
-#[cfg(not(debug_assertions))]
-fn get_pinned_certificates() -> Result<Vec<reqwest::Certificate>> {
-    // TBD: add pinned certificates
-    Ok(vec![])
-}
-
-#[cfg(debug_assertions)]
-fn get_pinned_certificates() -> Result<Vec<reqwest::Certificate>> {
-    Ok(vec![])
-}
-
-fn build_client() -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
-
-    let pinned_certs = get_pinned_certificates()?;
-
-    // In release builds with cert pinning, we can optionally disable the default
-    // root certificates to ensure ONLY our pinned certs are used
-    if !cfg!(debug_assertions) && !pinned_certs.is_empty() {
-        builder = builder.tls_built_in_root_certs(false);
-    }
-
-    for cert in pinned_certs {
-        builder = builder.add_root_certificate(cert);
-    }
-
-    builder.build().context("Failed to create HTTP client")
-}
-
 pub async fn fetch_manifest(url: &str) -> Result<Manifest> {
-    let client = build_client()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("Failed to create HTTP client")?;
 
     let response = client
         .get(url)
