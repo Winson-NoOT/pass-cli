@@ -23,6 +23,7 @@ nav = [
     "commands/folder.md",
     "commands/item.md",
     "commands/invite.md",
+    "commands/export.md",
     "commands/password.md",
     "commands/ssh-agent.md",
     "commands/update.md",

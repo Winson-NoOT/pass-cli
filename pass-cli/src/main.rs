@@ -147,6 +147,11 @@ enum Commands {
         #[command(subcommand)]
         command: commands::folder::FolderCommands,
     },
+    #[command(about = "Export your data")]
+    Export {
+        #[command(subcommand)]
+        command: commands::export::ExportCommands,
+    },
     #[command(about = "Invite operations")]
     Invite {
         #[command(subcommand)]
@@ -395,6 +400,7 @@ async fn run() -> Result<()> {
         Commands::Vault { command } => commands::vault::run(command, client).await,
         Commands::Item { command } => commands::item::run(command, client).await,
         Commands::Folder { command } => commands::folder::run(command, client).await,
+        Commands::Export { command } => commands::export::run(command, client).await,
         Commands::Invite { command } => commands::invite::run(command, client).await,
         Commands::Share { command } => commands::share::run(command, client).await,
         Commands::Session { command } => commands::session::run(command, client, store).await,
