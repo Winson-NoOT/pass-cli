@@ -95,7 +95,7 @@ enum Commands {
     Inject {
         #[arg(
             long,
-            help = "Set filemode for the output file (Unix systems only). It is ignored without the --out-file flag.",
+            help = "Set filemode for the output file as an octal value (e.g. 600, 0600 or 0o600, max 777). Unix systems only. It is ignored without the --out-file flag.",
             default_value = "0600"
         )]
         file_mode: String,

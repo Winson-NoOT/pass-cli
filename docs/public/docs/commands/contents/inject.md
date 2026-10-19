@@ -46,7 +46,7 @@ Use double braces to mark secret references:
 - `--in-file`, `-i`: Path to the template file. If not provided, reads from stdin.
 - `--out-file`, `-o`: Path to write the processed output. If not provided, writes to stdout.
 - `--force`, `-f`: Overwrite output file if it exists without prompting.
-- `--file-mode`: Set file permissions for output file (Unix only, default: `0600`). Ignored if `--out-file` is not used.
+- `--file-mode`: Set file permissions for output file as an octal value (`600`, `0600` and `0o600` are equivalent; maximum `777`). Unix only, default: `0600`. Ignored if `--out-file` is not used.
 
 ## Mutually exclusive options
 

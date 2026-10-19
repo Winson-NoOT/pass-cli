@@ -297,20 +297,26 @@ fn line_number(text: &str, byte_offset: usize) -> usize {
     text[..byte_offset].matches('\n').count() + 1
 }
 
-/// Parses a file mode string into a u32 value
-/// Supports both octal (0600) and decimal (600) formats
+/// Parses an octal file mode string (`600`, `0600` or `0o600`) into a u32 value
 /// Note: File modes are only meaningful on Unix systems
 fn parse_file_mode(mode_str: &str) -> Result<u32> {
-    if mode_str.starts_with('0') {
-        // Octal format
-        u32::from_str_radix(mode_str, 8)
-            .map_err(|e| anyhow!("Invalid octal file mode '{}': {}", mode_str, e))
-    } else {
-        // Decimal format
-        mode_str
-            .parse::<u32>()
-            .map_err(|e| anyhow!("Invalid file mode '{}': {}", mode_str, e))
+    let trimmed = mode_str.trim();
+    let digits = trimmed.strip_prefix("0o").unwrap_or(trimmed);
+    if digits.is_empty() || !digits.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+        return Err(anyhow!(
+            "Invalid file mode '{}': expected octal digits (e.g. 600)",
+            mode_str
+        ));
     }
+    let mode = u32::from_str_radix(digits, 8)
+        .map_err(|e| anyhow!("Invalid octal file mode '{}': {}", mode_str, e))?;
+    if mode > 0o777 {
+        return Err(anyhow!(
+            "Invalid file mode '{}': must be between 000 and 777 (octal)",
+            mode_str
+        ));
+    }
+    Ok(mode)
 }
 
 #[cfg(test)]
@@ -379,15 +385,46 @@ mod tests {
     }
 
     #[test]
-    fn parse_file_mode_decimal() {
-        assert_eq!(parse_file_mode("600").unwrap(), 600);
-        assert_eq!(parse_file_mode("644").unwrap(), 644);
+    fn parse_file_mode_without_leading_zero_is_octal() {
+        assert_eq!(parse_file_mode("600").unwrap(), 0o600);
+        assert_eq!(parse_file_mode("644").unwrap(), 0o644);
+        assert_eq!(parse_file_mode("700").unwrap(), 0o700);
+    }
+
+    #[test]
+    fn parse_file_mode_with_0o_prefix() {
+        assert_eq!(parse_file_mode("0o600").unwrap(), 0o600);
+        assert_eq!(parse_file_mode("0o755").unwrap(), 0o755);
+    }
+
+    #[test]
+    fn parse_file_mode_boundaries() {
+        assert_eq!(parse_file_mode("0").unwrap(), 0);
+        assert_eq!(parse_file_mode("000").unwrap(), 0);
+        assert_eq!(parse_file_mode("777").unwrap(), 0o777);
+        assert_eq!(parse_file_mode(" 600 ").unwrap(), 0o600);
+    }
+
+    #[test]
+    fn parse_file_mode_out_of_range() {
+        assert!(parse_file_mode("1000").is_err());
+        assert!(parse_file_mode("01000").is_err());
+        assert!(parse_file_mode("4755").is_err());
+        assert!(parse_file_mode("0o7777").is_err());
+        assert!(parse_file_mode("77777777777777").is_err());
     }
 
     #[test]
     fn parse_file_mode_invalid() {
         assert!(parse_file_mode("invalid").is_err());
-        assert!(parse_file_mode("0888").is_err()); // Invalid octal
+        assert!(parse_file_mode("0888").is_err());
+        assert!(parse_file_mode("680").is_err());
+        assert!(parse_file_mode("").is_err());
+        assert!(parse_file_mode("0o").is_err());
+        assert!(parse_file_mode("+600").is_err());
+        assert!(parse_file_mode("-600").is_err());
+        assert!(parse_file_mode("0x1a4").is_err());
+        assert!(parse_file_mode("6 00").is_err());
     }
 
     #[test]
