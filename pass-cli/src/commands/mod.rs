@@ -21,6 +21,7 @@ use clap::ValueEnum;
 use pass::domain::ShareRole;
 
 pub mod agent;
+pub mod export;
 pub mod folder;
 pub mod info;
 pub mod inject;
