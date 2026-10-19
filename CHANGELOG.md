@@ -5,6 +5,27 @@
 ### Other
 -->
 
+## 2.5.0 (2026-10-19)
+
+### Breaking :warning:
+
+- Login with credentials has been removed, only web login and login via PAT is supported now.
+
+### Features :tada:
+
+- Allow HTML export for offline use / archival.
+- Add support for non-ascii characters in secret references.
+- Add support for folders.
+- Improved search performance.
+
+### Fixes :bug:
+
+- Mode parsing for `pass-cli inject` in octal representation.
+
+### Other
+
+- Upgraded dependencies.
+
 ## 2.4.2 (2026-10-01)
 
 ### Fixes
