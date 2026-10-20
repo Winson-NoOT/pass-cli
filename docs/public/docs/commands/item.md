@@ -534,11 +534,17 @@ pass-cli item update \
 ### Update URL
 
 ```bash
-# Update URL field
+# Update URL field with a single vlaue
 pass-cli item update \
   --share-id "abc123def" \
   --item-id "item456" \
-  --field "url=https://newurl.com"
+  --field "urls=https://newurl.com"
+
+# Update URL field with multiple values
+pass-cli item update \
+  --share-id "abc123def" \
+  --item-id "item456" \
+  --field "urls=https://newurl.com, https://secondnewurl.com"
 ```
 
 **Field value format:**
@@ -547,7 +553,7 @@ Field values are specified using the `field_name=field_value` format:
 
 - Simple values: `--field "password=mypassword"`
 - Values with spaces: `--field "title=My Account Title"`
-- Values with special characters: `--field "url=https://example.com/path?query=value"`
+- Values with special characters: `--field "urls=https://example.com/path?query=value"`
 - Values with equals signs: The first `=` separates the field name from the value
 
 **Output:**
