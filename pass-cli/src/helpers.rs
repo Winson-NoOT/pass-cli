@@ -29,6 +29,7 @@ use pass::auth::PassSessionStore;
 #[async_trait::async_trait]
 pub trait SessionExt {
     async fn get_user_id(&self) -> Result<String>;
+    async fn flush(&self);
 }
 
 #[async_trait::async_trait]
@@ -42,6 +43,13 @@ impl SessionExt for Arc<RwLock<PassSessionStore>> {
         match user_id {
             Some(user_id) => Ok(user_id),
             None => Err(anyhow!("Invalid current session: Does not have a UserID")),
+        }
+    }
+
+    async fn flush(&self) {
+        let store = self.read().clone();
+        if let Err(e) = store.flush().await {
+            tracing::error!("Error saving session: {e:#}");
         }
     }
 }

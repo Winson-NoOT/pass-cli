@@ -17,10 +17,13 @@
  *
  */
 
-use crate::helpers::CliPassClient as PassClient;
+use crate::helpers::{CliPassClient as PassClient, SessionExt as _};
 use crate::telemetry::event::CommandEvent;
 use crate::utils::get_base_dir;
 use anyhow::{Context, Result, anyhow};
+use parking_lot::RwLock;
+use pass::auth::PassSessionStore;
+use std::sync::Arc;
 use tracing::warn;
 
 async fn remove_local_data() -> Result<()> {
@@ -43,7 +46,7 @@ async fn remove_local_data() -> Result<()> {
     }
 }
 
-pub async fn run(client: PassClient) -> Result<()> {
+pub async fn run(client: PassClient, store: Arc<RwLock<PassSessionStore>>) -> Result<()> {
     client.emit_telemetry(&CommandEvent::new("logout")).await;
     if let Err(e) = client.logout().await {
         eprintln!("Error logging out: {}", e);
@@ -52,6 +55,8 @@ pub async fn run(client: PassClient) -> Result<()> {
         );
         std::process::exit(1);
     }
+
+    store.flush().await;
 
     let key_provider = client
         .get_key_provider()
