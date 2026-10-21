@@ -5,6 +5,12 @@
 ### Other
 -->
 
+## 2.5.1 (2026-10-21)
+
+### Other
+
+- Upgrade network dependency to `muon 5`.
+
 ## 2.5.0 (2026-10-19)
 
 ### Breaking :warning:
