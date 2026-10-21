@@ -141,9 +141,9 @@ impl futures::task::Spawn for TokioExecutor {
     }
 }
 
-pub type TokioContext = super::os::Context<TokioOs, TokioExecutor>;
-pub type TokioClient = super::os::PassAuthClient<TokioOs, TokioExecutor>;
-pub type TokioSession = super::os::PassAuthSession<TokioOs, TokioExecutor>;
+pub type TokioContext = super::os::Context<TokioOs>;
+pub type TokioClient = super::os::PassAuthClient<TokioOs>;
+pub type TokioSession = super::os::PassAuthSession<TokioOs>;
 
 /// [`AuthRuntime`] for native builds: muon's hyper transport on top of an
 /// [`OperatingSystem`] and a multi-thread executor. The defaults are the
@@ -160,7 +160,7 @@ where
     Ex: Spawner,
     for<'a> <Os::Time as Sleep>::Sleep<'a>: Send + Sync,
 {
-    type Context = super::os::Context<Os, Ex>;
+    type Context = super::os::Context<Os>;
     type Time = Os::Time;
 
     fn time(&self) -> &Self::Time {

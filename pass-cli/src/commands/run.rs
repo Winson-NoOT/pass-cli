@@ -20,16 +20,19 @@
 use super::secret_resolver::{
     PASS_URI_PREFIX, PassClientResolver, SecretCache, SecretReference, find_pass_uri,
 };
-use crate::helpers::CliPassClient as PassClient;
+use crate::helpers::{CliPassClient as PassClient, SessionExt as _};
 use crate::telemetry::event::CommandEvent;
 
 use crate::commands::item::agent_monitor::ensure_reason_if_agent;
 use anyhow::{Context, Result, anyhow, bail};
+use parking_lot::RwLock;
+use pass::auth::PassSessionStore;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 
@@ -441,6 +444,7 @@ pub async fn run(
     no_masking: bool,
     command_args: Vec<String>,
     client: PassClient,
+    store: Arc<RwLock<PassSessionStore>>,
 ) -> Result<()> {
     ensure_reason_if_agent(&client)?;
     client.emit_telemetry(&CommandEvent::new("run")).await;
@@ -460,6 +464,8 @@ pub async fn run(
             .await
             .context("Failed to resolve secrets")?
     };
+
+    store.flush().await;
 
     // Execute the command with resolved environment
     let exit_code = execute_command(&command_args, resolved_env, no_masking, env_vars)

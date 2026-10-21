@@ -18,29 +18,40 @@
  */
 
 use crate::SharedPassSessionStore;
+use crate::auth::cookie_store::PassCookieStore;
 use muon::common::GenericContext;
-use muon::cookie_store::NoOpCookieStore;
+use muon::cookie_store::SharedCookieStore;
+
 use muon::{Client, NoInfo, Session};
 
 #[cfg(tokio_runtime)]
-pub type PassConnector<Os, Ex> =
-    muon::transport::http::hyper::connector::HyperConnector<Os, muon::rt::SendExecutor<Ex>>;
+pub type PassConnector<Os> = muon::transport::http::hyper::connector::HyperConnector<Os>;
 #[cfg(wasm_runtime)]
 pub type PassConnector<Sleeper> = muon::transport::http::reqwest::ReqwestConnector<Sleeper>;
 
 #[cfg(tokio_runtime)]
-pub type Context<Os, Ex> =
-    GenericContext<PassConnector<Os, Ex>, SharedPassSessionStore, NoInfo, NoOpCookieStore>;
+pub type PassCookieHandler<Os> =
+    SharedCookieStore<PassCookieStore, <PassConnector<Os> as muon::rt::HasTimeCapabilities>::Time>;
 #[cfg(wasm_runtime)]
-pub type Context<Sleeper> =
-    GenericContext<PassConnector<Sleeper>, SharedPassSessionStore, NoInfo, NoOpCookieStore>;
+pub type PassCookieHandler<Sleeper> = SharedCookieStore<PassCookieStore, Sleeper>;
 
 #[cfg(tokio_runtime)]
-pub type PassAuthClient<Os, Ex> = Client<Context<Os, Ex>>;
+pub type Context<Os> =
+    GenericContext<PassConnector<Os>, SharedPassSessionStore, NoInfo, PassCookieHandler<Os>>;
+#[cfg(wasm_runtime)]
+pub type Context<Sleeper> = GenericContext<
+    PassConnector<Sleeper>,
+    SharedPassSessionStore,
+    NoInfo,
+    PassCookieHandler<Sleeper>,
+>;
+
+#[cfg(tokio_runtime)]
+pub type PassAuthClient<Os> = Client<Context<Os>>;
 #[cfg(wasm_runtime)]
 pub type PassAuthClient<Sleeper> = Client<Context<Sleeper>>;
 
 #[cfg(tokio_runtime)]
-pub type PassAuthSession<Os, Ex> = Session<Context<Os, Ex>>;
+pub type PassAuthSession<Os> = Session<Context<Os>>;
 #[cfg(wasm_runtime)]
 pub type PassAuthSession<Sleeper> = Session<Context<Sleeper>>;

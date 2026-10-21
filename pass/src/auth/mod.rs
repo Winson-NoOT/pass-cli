@@ -39,6 +39,8 @@ pub mod authenticator;
 #[cfg(any(tokio_runtime, wasm_runtime))]
 pub mod client_builder;
 #[cfg(any(tokio_runtime, wasm_runtime))]
+pub mod cookie_store;
+#[cfg(any(tokio_runtime, wasm_runtime))]
 pub mod os;
 #[cfg(any(tokio_runtime, wasm_runtime))]
 pub mod runtime;
@@ -50,6 +52,8 @@ pub mod wasm_runtime;
 
 #[cfg(any(tokio_runtime, wasm_runtime))]
 pub use authenticator::Authenticator;
+#[cfg(any(tokio_runtime, wasm_runtime))]
+pub use cookie_store::PassCookieStore;
 #[cfg(any(tokio_runtime, wasm_runtime))]
 pub use runtime::AuthRuntime;
 #[cfg(tokio_runtime)]

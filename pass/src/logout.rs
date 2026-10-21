@@ -19,6 +19,7 @@
 
 use crate::{PassClient, PassClientContext};
 use anyhow::{Context, Result};
+use muon::cookie_store::CookieHandler as _;
 use pass_derive::sdk_export;
 
 #[sdk_export]
@@ -31,6 +32,9 @@ impl<C: PassClientContext> PassClient<C> {
             .context("Error getting client session")?
             .logout()
             .await;
+
+        self.client.cookie_handler().replace(vec![]);
+
         Ok(())
     }
 }

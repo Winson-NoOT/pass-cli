@@ -24,11 +24,12 @@ extern crate tracing;
 
 use crate::auth::cli_credential_provider::PERSONAL_ACCESS_TOKEN_ENV_VAR;
 use crate::features::CliClientFeatures;
-use crate::helpers::CliPassClient as PassClient;
+use crate::helpers::{CliPassClient as PassClient, SessionExt as _};
 use anyhow::{Context, Result, anyhow};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use pass::AnyhowErrorExt;
+use pass::auth::{PassSessionStore, TokioClient};
 use std::sync::Arc;
 use zeroizing_alloc::ZeroAlloc;
 
@@ -285,6 +286,21 @@ async fn run() -> Result<()> {
     let (client, store) = client::get_client(base_dir.clone(), client_features.clone())
         .await
         .context("Error getting client")?;
+
+    let result = run_command(cli, base_dir, client, client_features, store.clone()).await;
+
+    store.flush().await;
+
+    result
+}
+
+async fn run_command(
+    cli: Cli,
+    base_dir: std::path::PathBuf,
+    client: TokioClient,
+    client_features: Arc<CliClientFeatures>,
+    store: Arc<parking_lot::RwLock<PassSessionStore>>,
+) -> Result<()> {
     match &cli.command {
         Commands::Login {
             pat: personal_access_token,
@@ -384,7 +400,7 @@ async fn run() -> Result<()> {
         .await;
 
     match cli.command {
-        Commands::Logout { .. } => commands::logout::run(client).await,
+        Commands::Logout { .. } => commands::logout::run(client, store).await,
         Commands::Info { output } => commands::info::run(client, base_dir, output, store).await,
         Commands::Inject {
             file_mode,
@@ -396,7 +412,7 @@ async fn run() -> Result<()> {
             env_files,
             no_masking,
             command,
-        } => commands::run::run(env_files, no_masking, command, client).await,
+        } => commands::run::run(env_files, no_masking, command, client, store).await,
         Commands::Vault { command } => commands::vault::run(command, client).await,
         Commands::Item { command } => commands::item::run(command, client).await,
         Commands::Folder { command } => commands::folder::run(command, client).await,

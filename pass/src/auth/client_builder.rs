@@ -18,6 +18,7 @@
  */
 
 use crate::auth::config::ClientConfig;
+use crate::auth::cookie_store::PassCookieStore;
 use crate::auth::os::PassAuthClient;
 use crate::auth::storage::SessionStorage;
 use crate::auth::store::{
@@ -37,6 +38,8 @@ use std::sync::Arc;
 
 #[cfg(tokio_runtime)]
 use crate::auth::config::proxy_env_var;
+#[cfg(tokio_runtime)]
+use futures::task::SpawnExt as _;
 #[cfg(tokio_runtime)]
 use muon::client::builder::Hyper;
 #[cfg(tokio_runtime)]
@@ -145,7 +148,7 @@ pub async fn create_client<Os, Ex>(
     config: &ClientConfig,
     os: Os,
     executor: Ex,
-) -> anyhow::Result<(PassAuthClient<Os, Ex>, Arc<RwLock<PassSessionStore>>)>
+) -> anyhow::Result<(PassAuthClient<Os>, Arc<RwLock<PassSessionStore>>)>
 where
     Os: OperatingSystem,
     Ex: Spawner,
@@ -160,13 +163,13 @@ where
 
     let shared_store = SharedPassSessionStore::new(store);
     let store_ref = shared_store.inner.clone();
+    let cookie_store = PassCookieStore::new(store_ref.clone());
 
     let headers = generate_headers(config);
     trace!("Generated headers: {headers:?}");
 
     let mut transport_builder = muon::Client::builder_with_transport::<Hyper>(app, current_env)
-        .with_operating_system(os, ChaCha20Rng::from_rng(&mut rng()))
-        .with_multi_thread_executor(executor);
+        .with_operating_system(os, ChaCha20Rng::from_rng(&mut rng()));
 
     if config.proxy_config.http_proxy.is_some() {
         info!("Using HTTP_PROXY config");
@@ -184,7 +187,7 @@ where
 
     let mut builder = transport_builder
         .with_persistence(shared_store)
-        .without_cookie_store();
+        .with_cookie_store(cookie_store);
 
     for (name, value) in headers.to_http_headers() {
         builder = builder.with_default_headers((name, value));
@@ -197,7 +200,20 @@ where
         builder = builder.with_default_headers((XDEBUG_SESSION_HEADER, session.clone()));
     }
 
-    let client = builder.build().context("failed to build client")?;
+    let (client, driver) = builder
+        .build_with_driver()
+        .context("failed to build client")?;
+
+    let driver_executor = executor.clone();
+    let driver = driver.spawn_parallel(move |task| {
+        if let Err(e) = driver_executor.spawn_obj(task) {
+            error!("Failed to spawn a muon background task: {e:?}");
+        }
+    });
+    executor
+        .spawn(driver)
+        .context("failed to spawn muon driver")?;
+
     Ok((client, store_ref))
 }
 
@@ -220,6 +236,7 @@ where
 
     let shared_store = SharedPassSessionStore::new(store);
     let store_ref = shared_store.inner.clone();
+    let cookie_store = PassCookieStore::new(store_ref.clone());
 
     let headers = generate_headers(config);
     trace!("Generated headers: {headers:?}");
@@ -231,7 +248,7 @@ where
     let mut builder = muon::Client::builder_with_transport::<Reqwest>(app, current_env)
         .with_operating_system(sleeper, ChaCha20Rng::from_rng(&mut rng()))
         .with_persistence(shared_store)
-        .without_cookie_store();
+        .with_cookie_store(cookie_store);
 
     for (name, value) in headers.to_http_headers() {
         builder = builder.with_default_headers((name, value));

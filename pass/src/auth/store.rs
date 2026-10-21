@@ -25,6 +25,7 @@ use futures::task::{FutureObj, Spawn};
 use muon::app::{AppName, AppVersion, SemVer};
 use muon::auth::Auth;
 use muon::common::Server;
+use muon::cookie_store::StoredCookie;
 use muon::env::{Env, Environment};
 use muon::store::Store;
 use muon::tls::pins::TlsPinSet;
@@ -156,6 +157,8 @@ pub struct SerializedStore {
     pub account_type: AccountType,
     #[serde(default = "default_lock_after_seconds")]
     pub session_lock_after_seconds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cookies: Vec<StoredCookie>,
 }
 
 fn default_account_type() -> AccountType {
@@ -174,8 +177,10 @@ pub struct PassSessionStore {
     pub key_provider: Arc<dyn LocalKeyProvider>,
     pub account_type: AccountType,
     pub session_lock_after_seconds: Option<u32>,
+    pub cookies: Arc<RwLock<Vec<StoredCookie>>>,
     executor: Arc<dyn futures::task::Spawn + Send + Sync>,
     persist_generation: Arc<AtomicU64>,
+    persisted_generation: Arc<AtomicU64>,
     persist_lock: Arc<async_lock::Mutex<()>>,
 }
 
@@ -188,19 +193,19 @@ impl std::fmt::Debug for PassSessionStore {
                 "session_lock_after_seconds",
                 &self.session_lock_after_seconds,
             )
+            .field("cookies", &self.cookies.read().len())
             .finish()
     }
 }
 
 impl PassSessionStore {
-    fn schedule_persist(&self) {
-        let generation = self.persist_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    pub(crate) fn schedule_persist(&self) {
+        self.persist_generation.fetch_add(1, Ordering::SeqCst);
+
         let store_clone = self.clone();
         let persist = FutureObj::new(Box::pin(async move {
-            if let Err(e) = store_clone.persist_if_latest(generation).await {
+            if let Err(e) = store_clone.flush().await {
                 error!("Error serializing auth: {e:?}");
-            } else {
-                debug!("Session updated");
             }
         }));
         if let Err(e) = self.executor.spawn_obj(persist) {
@@ -208,21 +213,23 @@ impl PassSessionStore {
         }
     }
 
-    async fn persist_if_latest(&self, generation: u64) -> anyhow::Result<()> {
+    pub async fn flush(&self) -> anyhow::Result<()> {
         let _guard = self.persist_lock.lock().await;
 
-        if self.persist_generation.load(Ordering::SeqCst) != generation {
-            debug!("Skipping stale session persistence request");
+        let generation = self.persist_generation.load(Ordering::SeqCst);
+        if self.persisted_generation.load(Ordering::SeqCst) == generation {
             return Ok(());
         }
 
-        self.serialize().await
+        self.serialize().await?;
+        self.persisted_generation
+            .store(generation, Ordering::SeqCst);
+        Ok(())
     }
 
     pub async fn persist_now(&self) -> anyhow::Result<()> {
         self.persist_generation.fetch_add(1, Ordering::SeqCst);
-        let _guard = self.persist_lock.lock().await;
-        self.serialize().await
+        self.flush().await
     }
 
     fn inner_set_auth(&mut self, auth: Option<Auth>) {
@@ -312,8 +319,10 @@ impl PassSessionStore {
             key_provider,
             account_type: AccountType::User, // Default to User for new stores
             session_lock_after_seconds: None,
+            cookies: Arc::new(RwLock::new(Vec::new())),
             executor,
             persist_generation: Arc::new(AtomicU64::new(0)),
+            persisted_generation: Arc::new(AtomicU64::new(0)),
             persist_lock: Arc::new(async_lock::Mutex::new(())),
         }
     }
@@ -381,8 +390,10 @@ impl PassSessionStore {
             key_provider,
             account_type: deserialized.account_type,
             session_lock_after_seconds: deserialized.session_lock_after_seconds,
+            cookies: Arc::new(RwLock::new(deserialized.cookies)),
             executor,
             persist_generation: Arc::new(AtomicU64::new(0)),
+            persisted_generation: Arc::new(AtomicU64::new(0)),
             persist_lock: Arc::new(async_lock::Mutex::new(())),
         }))
     }
@@ -395,6 +406,7 @@ impl PassSessionStore {
                 auth: auth.clone(),
                 account_type: self.account_type,
                 session_lock_after_seconds: self.session_lock_after_seconds,
+                cookies: self.cookies.read().clone(),
             }
         };
 
@@ -446,5 +458,195 @@ impl PassSessionStore {
     pub fn set_session_lock_after_seconds(&mut self, lock_time: Option<u32>) {
         self.session_lock_after_seconds = lock_time;
         self.schedule_persist();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use muon::cookie_store::{CookieExpiration, UnixTimestamp};
+
+    fn cookie(name: &str) -> StoredCookie {
+        StoredCookie {
+            name: name.to_owned(),
+            value: "value".to_owned(),
+            secure: false,
+            http_only: false,
+            origin_url: "https://proton.me/".parse().unwrap(),
+            domain_attribute: None,
+            path_attribute: Some("/".to_owned()),
+            expiration: CookieExpiration::AtUtc(UnixTimestamp::from_secs(1_900_000_000)),
+        }
+    }
+
+    #[test]
+    fn session_without_cookies_still_deserializes() {
+        let json =
+            r#"{"auth":null,"env":"Prod","account_type":"User","session_lock_after_seconds":null}"#;
+
+        let store: SerializedStore = serde_json::from_str(json).expect("old session must load");
+
+        assert!(store.cookies.is_empty());
+        assert_eq!(store.account_type, AccountType::User);
+    }
+
+    #[test]
+    fn cookies_round_trip() {
+        let store = SerializedStore {
+            auth: None,
+            env: SerializedEnv::Prod,
+            account_type: AccountType::User,
+            session_lock_after_seconds: None,
+            cookies: vec![cookie("Session-Id")],
+        };
+
+        let json = serde_json::to_string(&store).unwrap();
+        let read: SerializedStore = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(read.cookies, store.cookies);
+    }
+
+    #[derive(Default)]
+    struct MemoryStorage {
+        contents: Mutex<Option<Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionStorage for MemoryStorage {
+        async fn load(&self) -> anyhow::Result<Option<Vec<u8>>> {
+            Ok(self.contents.lock().clone())
+        }
+        async fn save(&self, data: &[u8]) -> anyhow::Result<()> {
+            *self.contents.lock() = Some(data.to_vec());
+            Ok(())
+        }
+        async fn exists(&self) -> bool {
+            self.contents.lock().is_some()
+        }
+        async fn delete(&self) -> anyhow::Result<()> {
+            *self.contents.lock() = None;
+            Ok(())
+        }
+    }
+
+    struct FixedKeyProvider(Vec<u8>);
+
+    #[async_trait::async_trait]
+    impl LocalKeyProvider for FixedKeyProvider {
+        async fn get_key(&self) -> anyhow::Result<crate::domain::LocalKey> {
+            Ok(crate::domain::LocalKey::new(self.0.clone()))
+        }
+        async fn remove_key(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn key_provider() -> Arc<dyn LocalKeyProvider> {
+        Arc::new(FixedKeyProvider(
+            crate::domain::crypto::generate_encryption_key(),
+        ))
+    }
+
+    struct TestExecutor;
+
+    impl Spawn for TestExecutor {
+        fn spawn_obj(
+            &self,
+            future: FutureObj<'static, ()>,
+        ) -> Result<(), futures::task::SpawnError> {
+            tokio::spawn(future);
+            Ok(())
+        }
+    }
+
+    fn executor() -> Arc<dyn Spawn + Send + Sync> {
+        Arc::new(TestExecutor)
+    }
+
+    #[tokio::test]
+    async fn cookies_survive_a_save_load_round_trip() {
+        let storage = Arc::new(MemoryStorage::default());
+        let key_provider = key_provider();
+
+        let store = PassSessionStore::new(
+            Environment::new_prod(),
+            storage.clone(),
+            key_provider.clone(),
+            executor(),
+        );
+        store.cookies.write().push(cookie("Session-Id"));
+        store.persist_now().await.expect("session must be written");
+
+        let loaded = match PassSessionStore::get_from_local(storage, key_provider, executor()).await
+        {
+            Ok(Some(store)) => store,
+            Ok(None) => panic!("a session was written, so one must be loaded"),
+            Err(GetStoreError::CannotDecrypt(e)) => panic!("session must decrypt: {e:#}"),
+            Err(GetStoreError::Other(e)) => panic!("session must load: {e:#}"),
+        };
+
+        assert_eq!(loaded.cookies.read().as_slice(), [cookie("Session-Id")]);
+    }
+
+    struct IdleExecutor;
+
+    impl Spawn for IdleExecutor {
+        fn spawn_obj(
+            &self,
+            _future: FutureObj<'static, ()>,
+        ) -> Result<(), futures::task::SpawnError> {
+            Ok(())
+        }
+    }
+
+    fn idle_store(storage: Arc<MemoryStorage>) -> PassSessionStore {
+        PassSessionStore::new(
+            Environment::new_prod(),
+            storage,
+            key_provider(),
+            Arc::new(IdleExecutor),
+        )
+    }
+
+    #[tokio::test]
+    async fn flush_without_changes_does_not_write() {
+        let storage = Arc::new(MemoryStorage::default());
+        let store = idle_store(storage.clone());
+
+        store.flush().await.unwrap();
+
+        assert!(storage.contents.lock().is_none());
+    }
+
+    #[tokio::test]
+    async fn flush_writes_pending_changes_once() {
+        let storage = Arc::new(MemoryStorage::default());
+        let store = idle_store(storage.clone());
+
+        store.schedule_persist();
+        store.schedule_persist();
+        store.flush().await.unwrap();
+        assert!(storage.contents.lock().take().is_some());
+
+        store.flush().await.unwrap();
+        assert!(storage.contents.lock().is_none());
+    }
+
+    #[test]
+    fn empty_cookies_are_not_serialized() {
+        let store = SerializedStore {
+            auth: None,
+            env: SerializedEnv::Prod,
+            account_type: AccountType::User,
+            session_lock_after_seconds: None,
+            cookies: Vec::new(),
+        };
+
+        let json = serde_json::to_string(&store).unwrap();
+
+        assert!(
+            !json.contains("cookies"),
+            "an empty jar must not add noise to the session file: {json}"
+        );
     }
 }
