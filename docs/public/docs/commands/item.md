@@ -64,6 +64,46 @@ pass-cli item list --output json
 pass-cli item list --output human
 ```
 
+### search
+
+Search items across all vaults.
+
+```bash
+pass-cli item search <QUERY> [OPTIONS]
+```
+
+The query is matched case-insensitively against the item title, username, email, and URLs. Passwords, notes, and custom fields are not searched. Trashed items are always excluded.
+
+**Options:**
+
+- `QUERY` - Text to search for (required)
+- `--share-id SHARE_ID` - Limit the search to a vault by share ID
+- `--vault-name VAULT_NAME` - Limit the search to a vault by name
+- `--filter-type TYPE` - Filter results by item type: `note`, `login`, `alias`, `credit-card`, `identity`, `ssh-key`, `wifi`, `custom`
+- `--sort-by ORDER` - Sort results: `alphabetic-asc`, `alphabetic-desc`, `created-asc`, `created-desc`
+- `--limit N` - Maximum number of results to return
+- `--output FORMAT` - Output format: `human` or `json`. Uses default format from settings if not specified.
+
+**Mutually exclusive options:**
+
+- `--share-id` and `--vault-name` are mutually exclusive. If neither is provided, all vaults are searched.
+
+**Examples:**
+
+```bash
+# Search all vaults
+pass-cli item search "github"
+
+# Search a specific vault
+pass-cli item search "github" --vault-name "Personal Vault"
+
+# Search only logins and return JSON
+pass-cli item search "octocat" --filter-type login --output json
+
+# Sort matches alphabetically and limit the output
+pass-cli item search "mail" --sort-by alphabetic-asc --limit 10
+```
+
 ### create
 
 Create new items in a vault.

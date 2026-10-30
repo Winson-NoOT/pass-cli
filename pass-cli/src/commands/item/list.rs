@@ -33,7 +33,7 @@ struct ItemsList<T: serde::Serialize> {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ItemType {
+pub(crate) enum ItemType {
     Note,
     Login,
     Alias,
@@ -61,7 +61,7 @@ impl From<&ItemContent> for ItemType {
 
 // Fields here must never carry user-provided secret material (no content, note, extra_fields).
 #[derive(serde::Serialize)]
-struct ItemSummary {
+pub(crate) struct ItemSummary {
     id: ItemId,
     share_id: ShareId,
     vault_id: VaultId,

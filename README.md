@@ -6,6 +6,20 @@ A command-line interface for [Proton Pass](https://proton.me/pass).
 
 Full documentation is available at **https://protonpass.github.io/pass-cli/**
 
+## Installing the custom build (Windows)
+
+This fork publishes a ready-to-use Windows binary in its GitHub releases. Install it with:
+
+```powershell
+irm https://raw.githubusercontent.com/Winson-NoOT/pass-cli/main/install-custom.ps1 | iex
+```
+
+The script installs `pass-cli.exe` to `%LOCALAPPDATA%\Programs\ProtonPass` and adds that
+directory to your user `PATH`.
+
+> **Note:** running `pass-cli update` installs the official upstream release and removes the
+> custom `item search` command. Re-run the installer above to restore the custom build.
+
 ## Building from source
 
 **Prerequisites:** [Rust toolchain](https://rustup.rs/) (stable)
