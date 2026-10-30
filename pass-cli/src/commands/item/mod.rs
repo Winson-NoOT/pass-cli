@@ -33,6 +33,7 @@ pub mod delete;
 pub mod list;
 pub mod member;
 pub mod r#move;
+pub mod search;
 pub mod share;
 pub mod totp;
 pub mod trash;
@@ -83,6 +84,34 @@ pub enum ItemCommands {
             help = "Include full item content in JSON output (requires --output json, not allowed with agent sessions)"
         )]
         show_secrets: bool,
+    },
+    #[command(about = "Search items across all vaults")]
+    Search {
+        #[arg(help = "Text to search for in item title, username, email, and URLs")]
+        query: String,
+        #[arg(long, help = "Limit the search to a vault by share ID")]
+        share_id: Option<String>,
+        #[arg(
+            long = "vault-name",
+            value_name = "VAULT_NAME",
+            conflicts_with = "share_id",
+            help = "Limit the search to a vault by name"
+        )]
+        vault_name: Option<String>,
+        #[arg(
+            long,
+            help = "Filter items by type (note, login, alias, credit-card, identity, ssh-key, wifi, custom)"
+        )]
+        filter_type: Option<FilterType>,
+        #[arg(
+            long,
+            help = "Sort items (alphabetic-asc, alphabetic-desc, created-asc, created-desc)"
+        )]
+        sort_by: Option<SortBy>,
+        #[arg(long, help = "Maximum number of results to return")]
+        limit: Option<usize>,
+        #[arg(long)]
+        output: Option<OutputFormat>,
     },
     #[command(about = "Create a new item")]
     Create {
@@ -251,6 +280,29 @@ pub async fn run(subcommand: ItemCommands, client: PassClient) -> Result<()> {
                 sort_by,
                 output,
                 show_secrets,
+            )
+            .await
+        }
+        ItemCommands::Search {
+            query,
+            share_id,
+            vault_name,
+            filter_type,
+            sort_by,
+            limit,
+            output,
+        } => {
+            search::run(
+                client,
+                search::SearchOptions {
+                    query,
+                    share_id,
+                    vault_name,
+                    filter_type,
+                    sort_by,
+                    limit,
+                    output,
+                },
             )
             .await
         }
